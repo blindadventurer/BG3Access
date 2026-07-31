@@ -1,0 +1,7 @@
+# Everything in this tree is LF today; keep it that way on every machine, so a
+# checkout never shows up as "every line changed".
+* text=auto eol=lf
+
+*.dll binary
+*.exe binary
+*.pak binary

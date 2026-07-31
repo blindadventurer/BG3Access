@@ -1,0 +1,16 @@
+# LSLib toolkit (Divine, ~13 MB of third-party binaries). Only needed for
+# `build-mod.ps1 -Pak`; download from https://github.com/Norbyte/lslib/releases
+# and unpack into tools/lslib/.
+tools/lslib/
+
+# Staged copy: build-mod.ps1 and graft-mod.ps1 copy lua/*.lua here before packing.
+# The source of truth is lua/.
+BG3Access/Mods/BG3Access/ScriptExtender/Lua/A11y/
+
+# Build output
+*.pak
+
+# Local scratch
+*.log
+*.bak
+*.bak-a11y

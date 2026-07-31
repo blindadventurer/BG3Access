@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="331" />
+    <region id="Config">
+        <node id="root">
+            <children>
+                <node id="Dependencies" />
+                <node id="ModuleInfo">
+                    <attribute id="Author" type="LSString" value="a11y" />
+                    <attribute id="CharacterCreationLevelName" type="FixedString" value="" />
+                    <attribute id="Description" type="LSString" value="Host viability probes for a screen reader accessibility layer" />
+                    <attribute id="Folder" type="LSString" value="BG3AccessDiag" />
+                    <attribute id="LobbyLevelName" type="FixedString" value="" />
+                    <attribute id="MD5" type="LSString" value="" />
+                    <attribute id="MainMenuBackgroundVideo" type="FixedString" value="" />
+                    <attribute id="MenuLevelName" type="FixedString" value="" />
+                    <attribute id="Name" type="LSString" value="BG3AccessDiag" />
+                    <attribute id="NumPlayers" type="uint8" value="4" />
+                    <attribute id="PhotoBooth" type="FixedString" value="" />
+                    <attribute id="StartLevelName" type="FixedString" value="" />
+                    <attribute id="Tags" type="LSString" value="" />
+                    <attribute id="Type" type="FixedString" value="Add-on" />
+                    <attribute id="UUID" type="FixedString" value="03d12514-7133-4f3f-ae0f-b1150488c536" />
+                    <attribute id="Version64" type="int64" value="36028797018963968" />
+                </node>
+            </children>
+        </node>
+    </region>
+</save>
