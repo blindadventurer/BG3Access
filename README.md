@@ -58,3 +58,7 @@ re-read it — no repack, no restart.
 
 `tools/prism.dll` (the speech bridge that talks to NVDA/JAWS) *is* tracked, since
 `tools\speak.ps1` will not run without it.
+
+## License
+
+MIT — see [LICENSE](LICENSE). `tools/prism.dll` is third-party and carries its own terms.
