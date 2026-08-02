@@ -93,6 +93,51 @@ local function has(e, comp)
     return soft(function() return e[comp] end) ~= nil
 end
 
+--- Which components an entity really carries.
+---
+--- `e[Name] ~= nil` is not an answer and this is measured (E7): `CanBeDisarmed` came back true
+--- for all 133 entities in a sweep, while `Door` and `IsTrigger` came back false for
+--- everything. The engine's own list is the only honest source. Asked for one entity at a
+--- time, at the moment a claim is about to be made about it - never in the scan loop, where it
+--- would be two hundred lookups a pass.
+local function compSet(e)
+    local names = soft(function() return e:GetAllComponentNames() end)
+    if type(names) ~= "table" then return nil end
+    local set = {}
+    for i = 1, #names do set[tostring(names[i])] = true end
+    return set
+end
+M.compSet = compSet
+
+-- Metres. The engine stops a walk at its own interaction range, which is well inside this;
+-- arriving is measured more loosely (WALK_ARRIVE) so that a walk which ends a little short is
+-- still called an arrival, and those are exactly the cases where the action is not offered.
+M.INTERACT_M = 2.0
+
+-- What makes a thing usable. `CanInteract` is the general one; the rest are the specific
+-- answers - a container can be searched, a door opened, a creature spoken to.
+local INTERACT_COMPONENTS = { "CanInteract", "InteractionFilter", "CanBeLooted",
+                              "InventoryContainer", "IsDoor", "Door", "CanSpeak" }
+
+--- Is there really something to press A for.
+---
+--- The layer used to say "действие — кнопка A" on every arrival, which for a rock or a corpse
+--- in a wall is a promise the game will not keep - and a player who cannot see is left
+--- pressing a button at nothing, unable to tell a broken layer from a useless object.
+function M.canInteract(e, dist)
+    if e == nil then return false end
+    if dist ~= nil and dist > M.INTERACT_M then return false end
+    local set = compSet(e)
+    -- No list to read means the entity does not answer that question, not that it is dead
+    -- scenery. `CanInteract` by name is one of the readings that measured sanely - 41 of 133,
+    -- not 133 of 133 - so it is the fallback rather than a flat no.
+    if set == nil then return has(e, "CanInteract") end
+    for i = 1, #INTERACT_COMPONENTS do
+        if set[INTERACT_COMPONENTS[i]] then return true end
+    end
+    return false
+end
+
 --- Rough category, for sorting and for saying what a thing is.
 local function kindOf(e)
     if has(e, "ClientCharacter") or has(e, "Character") then
@@ -111,7 +156,26 @@ M.kindOf = kindOf
 M.list = {}
 M.cursor = 0
 M.radius = 20              -- how far the ordinary categories look
-M.SCAN_RADIUS = 80         -- how far the scan itself reaches, for markers and quest objects
+-- How far the sweep itself reaches, for markers, quest objects and anything the near
+-- categories are told to show. Measured on the beach: the query costs under a millisecond at
+-- every radius tried - 5 entities at 20 m, 10 at 120 m, 46 at 200 m, 237 at 300 m, and
+-- resolving all 237 names took under a millisecond too. So the limit on how wide this can be
+-- is not the engine; it is that a list of three hundred barrels cannot be listened to. Hence
+-- a wide sweep and a near radius the player moves themselves (M.radiusStep).
+M.SCAN_RADIUS = 300
+
+-- How often the list is rebuilt on its own, and how often the minimap is re-read while that
+-- happens. Until now the scanner only ever ran on a keypress, and a keypress that came within
+-- five metres and five seconds of the last one reused the old list - so walking past a body
+-- did not put it in the list, and the category counts were about wherever the player last
+-- stopped to press something. Now the world is swept on a timer and the categories are true
+-- as you walk through them.
+M.LIVE_MS = 700
+M.OBJ_MS = 2000
+
+-- What the near categories can be widened to, in metres. The first is the default: what is
+-- within twenty metres is what is around you; the rest are for looking for somewhere to go.
+M.RADII = { 20, 50, 100, 200 }
 
 --- Twelve directions relative to where the character looks, because a clock face is the one
 --- bearing scheme that needs no explaining.
@@ -133,19 +197,39 @@ M.bearing = bearing
 --- The radius is approximate on the engine side - a query for 5 m returned something at
 --- 11 m, because it walks grid cells rather than measuring (E7) - so the distance is
 --- recomputed here and anything outside the asked-for radius is dropped.
-function M.scan(radius)
+function M.scan(radius, quiet)
     -- Scanned wide, shown near: one sweep feeds every category, and each decides for itself
     -- how far it looks (rebuildView). A second sweep per category switch would cost more than
     -- the filtering it saves.
     radius = radius or M.SCAN_RADIUS
+    -- A scan taken by the clock rather than by a keypress must never speak: the same failure
+    -- said twice a second is not information, it is a jammed horn.
+    local function complain(text) if not quiet then say(text) end end
+
     local me = M.me()
-    if me == nil then say("Персонаж не найден") return nil end
+    if me == nil then complain("Персонаж не найден") return nil end
     local pos = positionOf(me)
-    if pos == nil then say("Позиция неизвестна") return nil end
+    if pos == nil then complain("Позиция неизвестна") return nil end
     local yaw = yawOf(me)
 
     local near = soft(function() return Ext.Entity.GetEntitiesAroundPosition(pos, radius) end)
-    if type(near) ~= "table" then say("Сканирование недоступно") return nil end
+    if type(near) ~= "table" then complain("Сканирование недоступно") return nil end
+
+    -- Which containers the player has already opened.
+    --
+    -- A looted chest is scenery: it stays in the world, it stays in the sweep, and it goes on
+    -- being offered as somewhere to go long after there is any reason to walk to it. The engine
+    -- says which ones have been opened, so the emptied ones can be told from the rest.
+    --
+    -- **Only the opened ones are asked what they hold**, and that is not an optimisation. A
+    -- container the player has never opened may report nothing simply because its contents have
+    -- not been replicated to the client yet - dropping those would empty the scanner of every
+    -- chest on the level. Opened plus empty is a fact; empty alone is a guess.
+    local opened = {}
+    local ol = soft(Ext.Entity.GetAllEntitiesWithComponent, "HasOpened")
+    if type(ol) == "table" then
+        for i = 1, #ol do opened[tostring(ol[i])] = true end
+    end
 
     local out = {}
     for i = 1, #near do
@@ -159,8 +243,15 @@ function M.scan(radius)
                 if name ~= nil then
                     local kind, rank = kindOf(e)
                     local dir = bearing(dx, dz, yaw)
+                    local looted = nil
+                    if opened[tostring(e)] then
+                        -- Through M, not the local: contentsOf is declared further down the
+                        -- file, so the name is not in scope here at all - only the field is.
+                        local items = M.contentsOf(e)
+                        looted = (items ~= nil and #items == 0) or nil
+                    end
                     out[#out + 1] = { entity = e, name = name, kind = kind, rank = rank,
-                                      dist = dist, dir = dir, pos = p }
+                                      dist = dist, dir = dir, pos = p, looted = looted }
                 end
             end
         end
@@ -173,9 +264,22 @@ function M.scan(radius)
     -- The quest words and the marker labels are refreshed with the scan rather than per
     -- entry: both come off a widget, and reading it once for a list of thirty is the
     -- difference between a filter and a cost.
-    local obj = M.objective and M.objective()
-    M.questKeys = (obj and obj.text) and M.stems(obj.text) or nil
-    M.markerLabels = obj and obj.markers or nil
+    --
+    -- But not with *every* scan. The sweep itself is a sub-millisecond engine query; this is a
+    -- six-hundred-node walk of the minimap's widget tree, and once the scan runs on a timer it
+    -- would be the only expensive thing in the pass. The labels change when the story does, so
+    -- twice a second is nonsense and every two seconds is plenty.
+    local nowMs = soft(Ext.Utils.MonotonicTime) or 0
+    if M.objAt == nil or (nowMs - M.objAt) > M.OBJ_MS then
+        M.objAt = nowMs
+        local obj = M.objective and M.objective()
+        M.questKeys = (obj and obj.text) and M.stems(obj.text) or nil
+        M.markerLabels = obj and obj.markers or nil
+    end
+    -- Walking past an anchor is what marks it seen, and walking is when the scan is taken.
+    -- Only once the anchors exist: building them is a hundred entity lookups and it belongs
+    -- to the moment the player asks for the category, not to every step.
+    if M.anchors ~= nil then soft(M.exploreMark) end
     M.rebuildView()
     return out
 end
@@ -194,6 +298,8 @@ M.CATEGORIES = {
     { key = "all",     name = "всё" },
     { key = "markers", name = "метки" },
     { key = "quest",   name = "задача" },
+    { key = "landmarks", name = "ориентиры" },
+    { key = "explore", name = "неизведанное" },
     { key = "beings",  name = "существа" },
     { key = "usable",  name = "взаимодействие" },
     { key = "things",  name = "предметы" },
@@ -205,15 +311,101 @@ M.view = {}
 -- a map marker or a quest object is normally well outside the twenty metres that "what is
 -- around me" wants. Everything else stays near, or the list fills with barrels a hundred
 -- metres away.
-M.FAR = { markers = true, quest = true }
+M.FAR = { markers = true, quest = true, landmarks = true }
+
+-- Things worth walking to, recognised by name.
+--
+-- Measured on the beach at 300 m: 235 named entities, of which **one** is a creature, two are
+-- doors and one is a container - and among the remaining 232 "items" sit Сумка Гейла at
+-- 116 m, Круг древних знаков at 121, Деревянный сундук at 127, Люк at 157, Дверь at 158 and
+-- three Лестница between 143 and 172. So the range is not the problem and the scanner is not
+-- blind; the categories are, because `CanInteract` and `IsDoor` are simply not on entities
+-- that far out and everything lands in "предметы" among two hundred shells.
+--
+-- The name is what is left, and it is enough. Stems are stored without their first letter,
+-- for the same reason the objective's are: names arrive capitalised and Lua's `lower()` does
+-- not touch Cyrillic.
+local LANDMARK_STEMS = {
+    "вер",      -- дверь
+    "орот",     -- ворота
+    "юк",       -- люк
+    "естниц",   -- лестница
+    "ход",      -- вход, выход, проход
+    "унду",     -- сундук
+    "щик",      -- ящик
+    "лтар",     -- алтарь
+    "руг древн", -- круг древних знаков
+    "уины",     -- руины
+    "клеп",     -- склеп
+    "ашня",     -- башня
+    "ычаг",     -- рычаг
+    "айник",    -- тайник
+    "ортал",    -- портал
+    "остер", "остёр",  -- костер
+    "агерь",    -- лагерь
+    "юк в",     -- люк в подвал
+}
+
+-- A stem may only be followed by a case ending, not by the rest of another word. Without this
+-- "юк" (люк, a hatch) matched **рюкзак**, and a backpack lying in the sand was announced as a
+-- landmark three hundred metres of list away from anything that is one. Two Cyrillic letters,
+-- four bytes: enough for "двери", "входа", "лестницы", not enough for "-зак".
+M.STEM_TAIL = 4
+
+local function stemHit(name, stem)
+    local from = 1
+    while true do
+        local s, e = name:find(stem, from, true)
+        if s == nil then return false end
+        local rest = name:match("^[^%s,%.;:%(%)/%-]*", e + 1) or ""
+        if #rest <= M.STEM_TAIL then return true end
+        from = s + 1
+    end
+end
+M.stemHit = stemHit
+
+local function isLandmark(name)
+    for i = 1, #LANDMARK_STEMS do
+        if stemHit(name, LANDMARK_STEMS[i]) then return true end
+    end
+    return false
+end
+M.isLandmark = isLandmark
+
+--- Does the map itself name this thing?
+---
+--- The marker labels are lifted off the minimap - "Заросшие руины", "Древняя дверь" - and they
+--- are the game's own answer to "what here matters": the points the story runs through, put
+--- there by hand. Anything they name is a landmark by definition, whatever a word list thinks.
+local function isMarkerNamed(name)
+    if M.markerLabels == nil then return false end
+    for _, label in ipairs(M.markerLabels) do
+        if name:find(label, 1, true) or label:find(name, 1, true) then return true end
+    end
+    return false
+end
+M.isMarkerNamed = isMarkerNamed
 
 local function matches(key, it)
+    -- An emptied container is out of every category but "всё". Not deleted, because the
+    -- complete list is the one place the layer never hides anything - and a player who walks
+    -- back to a chest wants to hear that it is the one they already took from, rather than
+    -- find nothing there at all.
+    if it.looted and key ~= "all" then return false end
     if key == "all" then return true end
     if key == "beings" then return it.kind == "существо" or it.kind == "спутник" end
     if key == "usable" then
         return it.kind == "дверь" or it.kind == "контейнер" or it.kind == "объект"
     end
     if key == "things" then return it.kind == nil end
+    if key == "landmarks" then
+        -- A door the game still flags as one counts too, wherever it is. A container does
+        -- **not**: "контейнер" is every backpack, crate and corpse-with-pockets in three
+        -- hundred metres, and a category that answers "where do I go" with loot answers a
+        -- different question than the one asked. Chests and crates are still here - by name,
+        -- through the stems, which is also what keeps a rucksack out.
+        return it.kind == "дверь" or isMarkerNamed(it.name) or isLandmark(it.name)
+    end
     if key == "quest" then
         if M.questKeys == nil then return false end
         for _, k in ipairs(M.questKeys) do
@@ -224,24 +416,51 @@ local function matches(key, it)
     if key == "markers" then
         -- The label is the thing's own name, so it matches outright - no stemming needed the
         -- way the objective sentence needs it.
-        if M.markerLabels == nil then return false end
-        for _, label in ipairs(M.markerLabels) do
-            if it.name:find(label, 1, true) or label:find(it.name, 1, true) then return true end
-        end
-        return false
+        return isMarkerNamed(it.name)
     end
     return true
 end
 
+--- What identifies an entry across a rescan.
+---
+--- Not the index: the list is sorted by distance and every step changes it. The entity itself
+--- is the identity where there is one, and the engine hands back the same proxy for it, so its
+--- printed form is stable within a session.
+local function idOf(it)
+    if it == nil then return nil end
+    if it.anchor ~= nil then return "a:" .. tostring(it.anchor) end
+    if it.entity ~= nil then return "e:" .. tostring(it.entity) end
+    return nil
+end
+
 function M.rebuildView()
     local cat = M.CATEGORIES[M.category]
-    local limit = M.FAR[cat.key] and M.SCAN_RADIUS or M.radius
-    local out = {}
-    for i = 1, #M.list do
-        local it = M.list[i]
-        if (it.dist or 0) <= limit and matches(cat.key, it) then out[#out + 1] = it end
+    -- What the player had selected. A rescan used to drop the cursor back to the first entry,
+    -- and a rescan happens every three metres walked - so stepping through the list on the way
+    -- somewhere kept announcing entry one, and "иди туда" walked to entry one: a different
+    -- object every time, which is a character running a route nobody chose.
+    local want = idOf(M.view and M.view[M.cursor or 0])
+
+    local out
+    -- Exploration is not a filter over what was scanned: the places it names are hundreds of
+    -- metres away and hold nothing the scan would ever return.
+    if cat.key == "explore" then
+        out = M.exploreView()
+    else
+        local limit = M.FAR[cat.key] and M.SCAN_RADIUS or M.radius
+        out = {}
+        for i = 1, #M.list do
+            local it = M.list[i]
+            if (it.dist or 0) <= limit and matches(cat.key, it) then out[#out + 1] = it end
+        end
     end
+
     M.view, M.cursor = out, 0
+    if want ~= nil then
+        for i = 1, #out do
+            if idOf(out[i]) == want then M.cursor = i break end
+        end
+    end
     return out
 end
 
@@ -270,6 +489,229 @@ function M.categoryStep(delta)
     return M.view
 end
 
+-- Where have I not been ------------------------------------------------------------
+--
+-- The game has no answer to this and it is worth writing down why, because the obvious places
+-- were all checked. The map's fog is not a list of areas: its 282 room records are interiors
+-- (KethericCity, Tollhouse, HagSecretLair) and every one of them reads `RoomState=Shrouded`
+-- from the first minute, while the open world has no such record at all. The 136 region
+-- records all carry `Hidden=false`, so that flag is not a "seen it" either. The client ECS is
+-- no help: the played character carries 142 components and none is a journal or a map, and
+-- `MapMarkerStyle` holds no entities.
+--
+-- What those region records do give is **positions**. Each has a `Guid` that resolves to a
+-- real entity with a `Transform`, spread over the whole level - about 130 of them. Their
+-- components are empty (`Tag{}`, `TriggerType{}`, `TriggerArea{}`), so they cannot be named
+-- or bounded, and the layer says so plainly: this category speaks in directions and metres,
+-- not in place names.
+--
+-- Visiting is tracked here rather than read: the character's position is known every tick, so
+-- an anchor the player has stood near is marked and kept in a file, which is what makes the
+-- list shrink as the level is explored - and survive the save-load that wipes the Lua state.
+
+M.anchors = nil
+M.anchorsAt = 0
+M.visited = nil
+M.visitedDirty = false
+M.VISIT_M = 25              -- standing this close counts as having been there
+M.EXPLORE_MAX = 600         -- further than this is another part of the act, not a direction
+M.EXPLORE_STEP = 20         -- one walk toward an anchor; exploring is many of these
+M.EXPLORE_FILE = "A11y/explored.json"
+
+local function visitedLoad()
+    if M.visited ~= nil then return M.visited end
+    M.visited = {}
+    local body = soft(Ext.IO.LoadFile, M.EXPLORE_FILE)
+    if type(body) == "string" and #body > 0 then
+        local t = soft(Ext.Json.Parse, body)
+        if type(t) == "table" then
+            for k, v in pairs(t) do if v then M.visited[tostring(k)] = true end end
+        end
+    end
+    return M.visited
+end
+
+local function visitedSave()
+    if not M.visitedDirty then return end
+    M.visitedDirty = false
+    local body = soft(Ext.Json.Stringify, M.visited or {})
+    if body ~= nil then soft(Ext.IO.SaveFile, M.EXPLORE_FILE, body) end
+end
+M.visitedSave = visitedSave
+
+--- The anchors of this level: the map's own regions, as points in the world.
+---
+--- Read from the Minimap rather than from the map screen, because the minimap is part of the
+--- HUD and is therefore always in the tree - no screen has to be opened for this to work.
+function M.anchorsScan(force)
+    local t = soft(Ext.Utils.MonotonicTime) or 0
+    if not force and M.anchors ~= nil and (t - M.anchorsAt) < 60000 then return M.anchors end
+
+    local pad = _G.Pad
+    if pad == nil then return M.anchors end
+    local ws = soft(pad.findWidgets) or {}
+    local node = nil
+    for i = 1, #ws do
+        if tostring(ws[i].name):find("Minimap", 1, true) then node = ws[i].node end
+    end
+    if node == nil then return M.anchors end
+
+    -- The minimap holds four hundred-odd records and the regions are scattered among them, so
+    -- the budget is generous on purpose: this runs once a minute at most, on a keypress.
+    local out, seen, budget = {}, {}, { n = 4000 }
+    local function rec(o, depth)
+        if o == nil or depth > 20 or budget.n <= 0 then return end
+        local ch, cn = A.kids(o)
+        for i = 1, cn do
+            budget.n = budget.n - 1
+            if budget.n <= 0 then return end
+            local p = soft(function() return ch[i]:GetAllProperties() end)
+            if type(p) == "table" and p.Guid ~= nil and p.WorldPos ~= nil then
+                local guid = tostring(p.Guid)
+                if not seen[guid] then
+                    seen[guid] = true
+                    -- The record's own WorldPos is in map space and does not convert; the
+                    -- entity behind the Guid carries the real one.
+                    local e = soft(Ext.Entity.Get, guid)
+                    local pos = e and positionOf(e)
+                    if pos ~= nil then
+                        out[#out + 1] = { guid = guid, pos = { pos[1], pos[2], pos[3] } }
+                    end
+                end
+            elseif type(p) == "table" and p.ActualWidth ~= nil then
+                rec(ch[i], depth + 1)
+            end
+        end
+    end
+    rec(node, 0)
+
+    if #out > 0 then
+        M.anchors, M.anchorsAt = out, t
+        _P("[nav] anchors: " .. #out .. " regions")
+    end
+    return M.anchors
+end
+
+--- Mark what the character has walked past. Cheap enough to run with every scan.
+function M.exploreMark()
+    local anchors = M.anchors
+    if anchors == nil then return 0 end
+    local me = M.me()
+    local pos = me and positionOf(me)
+    if pos == nil then return 0 end
+    local visited = visitedLoad()
+    local n = 0
+    for i = 1, #anchors do
+        local a = anchors[i]
+        if not visited[a.guid] then
+            local dx, dz = a.pos[1] - pos[1], a.pos[3] - pos[3]
+            if (dx * dx + dz * dz) <= (M.VISIT_M * M.VISIT_M) then
+                visited[a.guid] = true
+                M.visitedDirty = true
+                n = n + 1
+            end
+        end
+    end
+    if n > 0 then visitedSave() end
+    return n
+end
+
+-- Everything the layer moves to has to be an object - coordinates are not walked to, they are
+-- teleported to (see the server half) - so a direction is followed by hopping between what
+-- stands in it.
+M.STEP_MIN = 4              -- closer than this is where we already are
+
+-- How far off the line a thing may stand and still count as "that way", tried in turn. One
+-- narrow arc was the whole of this and it was why the category never moved anyone: on open
+-- ground the things that happen to stand within 35° of a region three hundred metres off are
+-- often none at all, and the answer was "поверните и попробуйте снова" - which is the layer
+-- asking the player to solve the problem it exists to solve.
+M.STEP_ARCS = { math.rad(35), math.rad(60), math.rad(90) }
+-- And how far one hop may reach. The near value first, so the walk stays a walk; the wide one
+-- only when nothing nearer stands in the way at all.
+M.STEP_RANGES = { 20, 45 }
+-- A hop has to actually get us closer to the anchor, or the list of things "that way" will
+-- happily send the character round in a circle - which is exactly what it did.
+M.STEP_GAIN = 2
+
+--- The next thing to walk to on the way to an anchor, or why there is none.
+function M.stepTarget(anchor)
+    local me = M.me()
+    local mp = me and positionOf(me)
+    if mp == nil then return nil, "Позиция неизвестна" end
+    if M.stale() then M.scan() end
+
+    local ax, az = anchor.pos[1], anchor.pos[3]
+    local a0 = math.atan(ax - mp[1], az - mp[3])
+    local now = math.sqrt((ax - mp[1]) ^ 2 + (az - mp[3]) ^ 2)
+    local seen = 0
+
+    for _, range in ipairs(M.STEP_RANGES) do
+        for _, arc in ipairs(M.STEP_ARCS) do
+            local best = nil
+            for i = 1, #M.list do
+                local it = M.list[i]
+                local d = it.dist or 0
+                if d >= M.STEP_MIN and d <= range then
+                    local a = math.atan(it.pos[1] - mp[1], it.pos[3] - mp[3])
+                    local off = math.abs(((a - a0 + math.pi) % (2 * math.pi)) - math.pi)
+                    if off <= arc then
+                        seen = seen + 1
+                        -- Furthest, not nearest: each hop should uncover as much new ground as
+                        -- it safely can, and the near things were already in range before it.
+                        -- But only if standing there is progress toward the anchor.
+                        local left = math.sqrt((ax - it.pos[1]) ^ 2 + (az - it.pos[3]) ^ 2)
+                        if left <= now - M.STEP_GAIN then
+                            local uuid = soft(function() return it.entity.Uuid.EntityUuid end)
+                            if type(uuid) == "string" and uuid ~= "" then
+                                if best == nil or d > best.dist then
+                                    best = { uuid = uuid, name = it.name, dist = d,
+                                             dir = it.dir, left = left }
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            if best ~= nil then return best end
+        end
+    end
+
+    if seen > 0 then
+        return nil, "В ту сторону всё, что стоит, не приближает к участку"
+    end
+    return nil, "В ту сторону ничего не стоит, поверните или подойдите ближе"
+end
+
+--- The places on this level the character has never stood near, nearest first.
+function M.exploreView()
+    M.anchorsScan()
+    local anchors = M.anchors
+    if anchors == nil then return {} end
+    M.exploreMark()
+
+    local me = M.me()
+    local pos = me and positionOf(me)
+    if pos == nil then return {} end
+    local yaw = yawOf(me)
+    local visited = visitedLoad()
+
+    local out = {}
+    for i = 1, #anchors do
+        local a = anchors[i]
+        if not visited[a.guid] then
+            local dx, dz = a.pos[1] - pos[1], a.pos[3] - pos[3]
+            local dist = math.sqrt(dx * dx + dz * dz)
+            if dist <= M.EXPLORE_MAX then
+                out[#out + 1] = { name = "участок", kind = nil, anchor = a.guid,
+                                  pos = a.pos, dist = dist, dir = bearing(dx, dz, yaw) }
+            end
+        end
+    end
+    table.sort(out, function(x, y) return x.dist < y.dist end)
+    return out
+end
+
 --- Things standing in the world that a map marker names, nearest first.
 ---
 --- Kept apart from the category machinery so the navigator can ask without moving the
@@ -294,15 +736,40 @@ function M.markerHits()
     return hits, obj
 end
 
+--- Widen or narrow what "around me" means.
+---
+--- Exploring blind and standing in a room are the same question asked at two scales, and the
+--- scanner cannot serve both at once: twenty metres keeps the list to what is actually here,
+--- while two hundred is how you find out that there is a building over that way at all. The
+--- sweep is wide either way and costs nothing measurable, so this only moves the filter.
+function M.radiusStep(delta)
+    local at = 1
+    for i, r in ipairs(M.RADII) do if M.radius == r then at = i end end
+    at = ((at - 1 + (delta or 1)) % #M.RADII) + 1
+    M.radius = M.RADII[at]
+    if M.stale() then M.scan() end
+    local view = M.rebuildView()
+    say("Радиус " .. M.radius .. " метров, " .. #view)
+    return M.radius
+end
+
 function M.categorySay()
     say(M.CATEGORIES[M.category].name .. ", " .. #M.view)
     return M.CATEGORIES[M.category].key
 end
 
+-- The clock bearing is gone from the spoken list, and it was there for a reason that did not
+-- survive being used: a bearing is only worth hearing if you can act on it, and there is no key
+-- that turns the character. "Труп, на два, 6 м" costs a word and a half of listening to say
+-- nothing the player can use - the number is the whole message, and whether it is going down.
+--
+-- The one exception is an exploration anchor. It has no name and no kind; the direction is
+-- everything it is.
 local function describe(it)
     local parts = { it.name }
     if it.kind then parts[#parts + 1] = it.kind end
-    parts[#parts + 1] = it.dir
+    if it.looted then parts[#parts + 1] = "пусто" end
+    if it.anchor ~= nil and it.dir then parts[#parts + 1] = it.dir end
     parts[#parts + 1] = string.format("%.0f м", it.dist)
     return table.concat(parts, ", ")
 end
@@ -348,6 +815,19 @@ function M.stale()
     return false
 end
 
+--- Keep the list true while the player walks, without being asked.
+---
+--- Called from the reader's pass. The engine query is what makes this affordable: measured at
+--- 300 m it returns 237 entities in under a millisecond, and resolving all their names cost
+--- under a millisecond more. Silent by construction - it rebuilds the list and the category,
+--- and says nothing at all; every announcement still belongs to a key the player pressed.
+function M.scanTick()
+    local now = soft(Ext.Utils.MonotonicTime) or 0
+    if M.scanAt ~= nil and (now - M.scanAt) < M.LIVE_MS then return false end
+    M.scan(nil, true)
+    return true
+end
+
 --- Recompute one entry against the world as it stands this instant.
 ---
 --- Even a fresh list ages between the scan and the sentence: a creature walks while the
@@ -356,7 +836,10 @@ end
 local function refreshEntry(it)
     local me = M.me()
     local mp = me and positionOf(me)
-    local p = it.entity and positionOf(it.entity)
+    -- An exploration anchor is a place, not a thing: it has no entity to ask and its position
+    -- cannot go stale. Everything else keeps the old rule, where a missing entity means the
+    -- object is gone and the list has to be taken again.
+    local p = it.entity and positionOf(it.entity) or (it.anchor and it.pos)
     if mp == nil or p == nil then return false end
     local dx, dz = p[1] - mp[1], p[3] - mp[3]
     it.pos = p
@@ -374,9 +857,13 @@ function M.step(delta)
         say(cat.key == "all" and "Рядом никого" or (cat.name .. ", пусто"))
         return
     end
+    -- Running off either end used to be silent, which is indistinguishable from a key that
+    -- did nothing - and with the cursor resetting on every rescan, "did nothing" was what it
+    -- looked like all the way up the list. Now an end says it is an end.
     local i = M.cursor + (delta or 1)
-    if i < 1 then i = 1 end
-    if i > #M.view then i = #M.view end
+    local edge = nil
+    if i < 1 then i, edge = 1, "начало списка" end
+    if i > #M.view then i, edge = #M.view, "конец списка" end
     M.cursor = i
 
     local it = M.view[i]
@@ -391,7 +878,7 @@ function M.step(delta)
         it = M.view[i]
         refreshEntry(it)
     end
-    say(describe(it) .. ", " .. i .. " из " .. #M.view)
+    say((edge and (edge .. ". ") or "") .. describe(it) .. ", " .. i .. " из " .. #M.view)
     return it
 end
 
@@ -403,6 +890,132 @@ function M.where()
     local name = nameOf(me) or "персонаж"
     say(name .. ". " .. string.format("%.0f, %.0f", pos[1], pos[3]))
     return pos
+end
+
+-- What is inside the thing that is open ----------------------------------------------
+--
+-- Looting is the one panel whose text is not in the panel. Measured on an opened pouch: the
+-- widget carries 3037 nodes, of which 138 are visible and twelve are strings - the weight, the
+-- capacity, and names that belong to the other half of the screen. The slot the d-pad stands
+-- on has exactly one string under it, "1", the stack count. The items are **icons**.
+--
+-- So the names are read where they actually live, and the client ECS has all of it:
+--
+--   HasOpened                        marks the container the player has opened
+--   InventoryOwner.PrimaryInventory  the inventory entity behind it
+--     InventoryContainer.Items       LegacyMap<uint16, ContainerSlotData>
+--       [slot].Item                  the item entity, and DisplayName from there as usual
+--
+-- The panel is still needed for one thing the ECS cannot know: which slot the player is on.
+-- That comes from the widget's focus chain (Pad.slotFind), and the two are joined by index.
+
+--- What one entity holds, in slot order, or nil if it holds nothing readable.
+local function contentsOf(e)
+    local items = soft(function()
+        return e.InventoryOwner.PrimaryInventory.InventoryContainer.Items
+    end)
+    if items == nil then return nil end
+    -- The map is keyed by slot number and comes back in no order; the player's list is the
+    -- one the panel draws, which is slot order.
+    local keys = {}
+    for k in pairs(items) do keys[#keys + 1] = k end
+    table.sort(keys, function(a, b) return (tonumber(a) or 0) < (tonumber(b) or 0) end)
+
+    local out = {}
+    for i = 1, #keys do
+        local slot = items[keys[i]]
+        local it = soft(function() return slot.Item end)
+        out[#out + 1] = { slot = tonumber(keys[i]), entity = it,
+                          name = (it and nameOf(it)) or nil }
+    end
+    return out
+end
+M.contentsOf = contentsOf
+
+--- The container the player has open, with what is in it, in slot order.
+---
+--- Two ways of finding it, tried in turn, because neither is reliable alone. `HasOpened` is the
+--- game's own flag and is the right answer when it is right - but it stays on things that were
+--- opened earlier and elsewhere, so the first entity carrying it is not necessarily the one in
+--- front of the player. The fallback is what measured correctly at the pouch: the nearest thing
+--- within five metres that owns an inventory at all. Whichever has contents wins.
+M.OPEN_M = 6                -- further than this is not the thing in front of you
+-- And nearer than this is not a thing in the world at all. An item inside a character's
+-- inventory inherits the carrier's transform, so a supply pouch in the player's own backpack
+-- reads as a container standing at exactly zero metres - and, being flagged `HasOpened` from
+-- whenever it was last opened, it won every search. The loot panel was reading out the
+-- player's own bag while the chest in front of them went unmentioned.
+M.OPEN_MIN = 0.5
+
+function M.openContainer()
+    local me = M.me()
+    local mp = me and positionOf(me)
+    if mp == nil then return nil end
+
+    -- **Sorted by distance, and this is the whole correctness of it.** The first version took
+    -- the first candidate that had anything in it, and `HasOpened` stays set on every container
+    -- opened earlier in the level - so a pouch looted a minute ago and left behind kept winning
+    -- over the chest standing in front of the character, and the panel read out the wrong
+    -- inventory with complete confidence.
+    local cands, seen = {}, {}
+    local function offer(e)
+        local id = tostring(e)
+        if seen[id] then return end
+        local p = positionOf(e)
+        if p == nil then return end
+        local dx, dz = p[1] - mp[1], p[3] - mp[3]
+        local d = math.sqrt(dx * dx + dz * dz)
+        if d > M.OPEN_M or d < M.OPEN_MIN then return end
+        seen[id] = true
+        cands[#cands + 1] = { entity = e, dist = d }
+    end
+
+    local list = soft(Ext.Entity.GetAllEntitiesWithComponent, "HasOpened")
+    if type(list) == "table" then
+        for i = 1, #list do offer(list[i]) end
+    end
+    -- The world list is not refreshed while a panel is up - the reader hands its pass to the
+    -- panel - so it is the sweep from just before the container was opened, which is exactly
+    -- the moment the character was standing at it.
+    if #M.list == 0 then M.scan(nil, true) end
+    for i = 1, #M.list do
+        local it = M.list[i]
+        if (it.dist or 99) <= M.OPEN_M and
+           soft(function() return it.entity.InventoryOwner end) ~= nil then
+            offer(it.entity)
+        end
+    end
+    table.sort(cands, function(a, b) return a.dist < b.dist end)
+
+    local fallback = nil
+    for i = 1, #cands do
+        local items = contentsOf(cands[i].entity)
+        if items ~= nil and #items > 0 then
+            return { entity = cands[i].entity, name = nameOf(cands[i].entity),
+                     dist = cands[i].dist, items = items }
+        end
+        if fallback == nil and items ~= nil then fallback = cands[i] end
+    end
+    -- Nothing with contents. Still an answer, and the right one: an empty container is not a
+    -- broken layer, and the player needs to hear the difference.
+    if fallback ~= nil then
+        return { entity = fallback.entity, name = nameOf(fallback.entity),
+                 dist = fallback.dist, items = {} }
+    end
+    return nil
+end
+
+--- The same, said out loud: what is in the thing in front of you.
+function M.containerSay()
+    local c = M.openContainer()
+    if c == nil then say("Ничего не открыто") return nil end
+    if #c.items == 0 then say((c.name or "Контейнер") .. ", пусто") return c end
+    local parts = {}
+    for i = 1, math.min(#c.items, 12) do
+        parts[#parts + 1] = c.items[i].name or "предмет"
+    end
+    say((c.name or "Контейнер") .. ", " .. #c.items .. ". " .. table.concat(parts, ". "))
+    return c
 end
 
 -- going there ----------------------------------------------------------------------
@@ -429,11 +1042,28 @@ function M.goTo(index)
     end
 
     local uuid = soft(function() return it.entity.Uuid.EntityUuid end)
-    local msg
+    local msg, spoken, going = nil, nil, it.name
     if type(uuid) == "string" and uuid ~= "" then
         msg = { cmd = "gotoObject", uuid = uuid }
+        spoken = "Иду: " .. it.name
+    elseif it.anchor ~= nil then
+        -- An exploration anchor is a **direction**, never a destination: it is a region
+        -- trigger hundreds of metres off, and coordinates are not walked to at all (see the
+        -- server). So the step is taken to the furthest *thing* standing that way - an object
+        -- is on real ground, the engine paths to it and stops at reach. Which is also what
+        -- exploring is: go to what you can hear, listen to what came into range, go again.
+        local target, err = M.stepTarget(it)
+        if target == nil then say(err or "В ту сторону не за что зацепиться") return false end
+        going = target.name
+        msg = { cmd = "gotoObject", uuid = target.uuid }
+        spoken = "Иду " .. tostring(it.dir) .. ": " .. target.name .. ", " ..
+                 string.format("%.0f м", target.dist) ..
+                 -- One hop is not the journey: saying what is left to the region is what turns
+                 -- a series of presses into progress the player can hear.
+                 (target.left and (", до участка " .. string.format("%.0f м", target.left)) or "")
     else
-        msg = { cmd = "goto", x = it.pos[1], y = it.pos[2], z = it.pos[3] }
+        say("Туда идти не по чему")
+        return false
     end
 
     local body = soft(Ext.Json.Stringify, msg)
@@ -444,14 +1074,262 @@ function M.goTo(index)
         return false
     end
     M.cursor = i
-    say("Иду: " .. it.name)
+    M.walkStarted(msg.uuid, going)
+    say(spoken)
     return true
 end
 
+-- Stopping, and knowing whether it worked.
+--
+-- The old version said "Стою" and hoped. It was not stopping anything: Osiris movement queues
+-- rather than replaces (see the server half), so the order to stand still lined up behind a
+-- walk that was still running - and a walk to something unreachable never ends. The player
+-- heard "Стою" while the character kept going, which is the worst answer a layer can give.
+--
+-- So the word is now "Стоп" - an acknowledgement of the press, not a claim about the world -
+-- and the claim is checked a moment later against the character's own position. Pressed twice
+-- in a row it escalates to the hard stop, which places the character on the ground it is
+-- already standing on and cannot be queued behind anything.
+M.STOP_AGAIN_MS = 5000      -- a second press inside this is "it did not work, try harder"
+M.STOP_CHECK_MS = 1800      -- long enough for a walk order to have died
+M.STOP_MOVED_M2 = 9         -- three metres on from where stop was pressed is "still going"
+
+M.stopAt = nil
+M.stopping = nil
+
 function M.stop()
-    local body = soft(Ext.Json.Stringify, { cmd = "stop" })
+    local now = soft(Ext.Utils.MonotonicTime) or 0
+    local hard = M.stopAt ~= nil and (now - M.stopAt) < M.STOP_AGAIN_MS
+    M.stopAt = now
+    -- Whatever we were watching, we are no longer going there: leaving it set is how "Пришли"
+    -- gets announced about a walk the player cancelled.
+    M.walking = nil
+
+    local me = M.me()
+    M.stopping = { at = now, pos = me and positionOf(me) }
+
+    local body = soft(Ext.Json.Stringify, { cmd = "stop", hard = hard })
     soft(function() Ext.Net.PostMessageToServer(M.CHANNEL, body) end)
-    say("Стою")
+    say(hard and "Стоп, жёстко" or "Стоп")
+end
+
+--- Did it stop? Called from the same pass as walkTick.
+function M.stopTick()
+    local s = M.stopping
+    if s == nil then return false end
+    local now = soft(Ext.Utils.MonotonicTime) or 0
+    if (now - s.at) < M.STOP_CHECK_MS then return false end
+    M.stopping = nil
+
+    local me = M.me()
+    local p = me and positionOf(me)
+    if p == nil or s.pos == nil then return false end
+    local dx, dz = p[1] - s.pos[1], p[3] - s.pos[3]
+    if (dx * dx + dz * dz) > M.STOP_MOVED_M2 then
+        if M.stopHow == "" then
+            -- The server answered and had nothing to answer with. Worth saying once in plain
+            -- words, because no amount of pressing the key will change it.
+            say("Не останавливается. Сборка без очистки очереди — стоп невозможен")
+        else
+            say("Не останавливается, нажмите ещё раз")
+        end
+        return true
+    end
+    return false
+end
+
+-- Did we get there? ------------------------------------------------------------------
+--
+-- The layer could send the character walking and then said nothing ever again: not on
+-- arrival, not when the path ran out, not when something blocked the way. For a player who
+-- cannot see the character move, "иду к двери" followed by silence is indistinguishable from
+-- a layer that has crashed - and the honest answers are all cheap, because the position is
+-- already read every pass.
+
+M.walking = nil
+M.WALK_ARRIVE = 3.0         -- close enough to call it arrival; the engine stops at reach
+M.WALK_STUCK_MS = 2000      -- standing still this long, still short of the target, is stuck
+M.WALK_CIRCLE_MS = 5000     -- moving this long without getting any nearer is not a path
+M.WALK_GIVEUP_MS = 60000
+
+--- Remember what we were sent to, so arriving at it can be noticed.
+function M.walkStarted(uuid, name)
+    local me = M.me()
+    local p = me and positionOf(me)
+    -- Going somewhere on purpose ends any argument about whether the last stop worked; without
+    -- this the check fires on the new walk and says the layer cannot stop the character.
+    M.stopping = nil
+    local now = soft(Ext.Utils.MonotonicTime) or 0
+    M.walking = { uuid = uuid, name = name, at = now,
+                  lastPos = p, lastMove = now, said = nil }
+
+    -- The distance the walk started from, and the best one reached since. Between them they
+    -- answer the question the player could not ask before: is this walk making progress, or is
+    -- the character going round something it cannot path past.
+    local d = M.distanceTo(uuid)
+    M.walking.startDist, M.walking.best, M.walking.bestAt = d, d, now
+end
+
+--- How far the character is from an object, right now.
+function M.distanceTo(uuid)
+    if uuid == nil then return nil end
+    local me = M.me()
+    local mp = me and positionOf(me)
+    local e = soft(Ext.Entity.Get, uuid)
+    local tp = e and positionOf(e)
+    if mp == nil or tp == nil then return nil end
+    local dx, dz = tp[1] - mp[1], tp[3] - mp[3]
+    return math.sqrt(dx * dx + dz * dz), bearing(dx, dz, yawOf(me)), e
+end
+
+--- How the walk is going: the one question a blind player has while the character moves, and
+--- the layer had no answer for it. The number alone is not enough - "16 метров" twice in a row
+--- means something very different from "16" then "9" - so the change since the last press is
+--- said with it, which is what turns a distance into "we are getting there" or "we are not".
+function M.progress()
+    local w = M.walking
+    if w == nil then
+        -- Not walking. The same question about the entry under the cursor, because that is
+        -- what the player is deciding whether to walk to.
+        local it = M.view[M.cursor]
+        if it == nil then say("Никуда не идём") return nil end
+        if not refreshEntry(it) then say("Никуда не идём") return nil end
+        say("Не идём. Выбрано: " .. describe(it))
+        return nil
+    end
+
+    local d = M.distanceTo(w.uuid)
+    if d == nil then
+        M.walking = nil
+        say("Цель пропала: " .. tostring(w.name))
+        return nil
+    end
+
+    local bits = { tostring(w.name), string.format("%.0f м", d) }
+    -- Against the last thing said, not against the start: on the fifth press the player is
+    -- asking about the last few seconds, not about the whole journey.
+    local ref = w.saidDist or w.startDist
+    if ref ~= nil then
+        local delta = ref - d
+        if delta >= 1 then bits[#bits + 1] = string.format("ближе на %.0f", delta)
+        elseif delta <= -1 then bits[#bits + 1] = string.format("дальше на %.0f", -delta)
+        else bits[#bits + 1] = "без изменений" end
+    end
+    w.saidDist = d
+    say(table.concat(bits, ", "))
+    return d
+end
+
+--- Watch the walk to its end. Called from the reader's pass, like the other world ticks.
+function M.walkTick()
+    local w = M.walking
+    if w == nil then return false end
+    local now = soft(Ext.Utils.MonotonicTime) or 0
+    -- A walk that has run a minute is a walk that is not going to end, and giving up on it
+    -- quietly is how the character ends up running somewhere with the layer saying nothing.
+    if (now - w.at) > M.WALK_GIVEUP_MS then
+        M.walking = nil
+        say("Не дошли: " .. tostring(w.name) .. ". Остановить — стик")
+        return true
+    end
+
+    local me = M.me()
+    local p = me and positionOf(me)
+    if p == nil then return false end
+
+    -- Where the target is now: it may be a creature, and creatures walk away.
+    local tp, e = nil, nil
+    if w.uuid ~= nil then
+        e = soft(Ext.Entity.Get, w.uuid)
+        tp = e and positionOf(e)
+    end
+    if tp ~= nil then
+        local dx, dz = tp[1] - p[1], tp[3] - p[3]
+        local d = math.sqrt(dx * dx + dz * dz)
+        if d <= M.WALK_ARRIVE then
+            M.walking = nil
+            -- The action is promised only when the thing can actually take one and we are
+            -- close enough for the game to offer it; otherwise the distance is said instead,
+            -- which is the fact the player needs to decide whether to walk the rest.
+            local bits = { "Пришли: " .. tostring(w.name) }
+            if M.canInteract(e, d) then
+                bits[#bits + 1] = "действие — кнопка A"
+            else
+                bits[#bits + 1] = string.format("%.0f м", d)
+            end
+            say(table.concat(bits, ", "))
+            return true
+        end
+
+        -- Walking, but no nearer than it has been for a while: the character is going round
+        -- something, or the engine is pathing to a spot on the far side of a wall. Standing
+        -- still is caught below and sounds like a stop; this one sounds exactly like a walk,
+        -- which is why it went unnoticed for a whole session.
+        if w.best == nil or d < w.best - 0.5 then
+            w.best, w.bestAt = d, now
+        elseif (now - (w.bestAt or now)) > M.WALK_CIRCLE_MS then
+            w.bestAt = now
+            say("Не приближаемся: " .. tostring(w.name) .. ", " .. string.format("%.0f м", d))
+            return true
+        end
+    end
+
+    -- Still moving? Any change of position counts; the engine's walk is not smooth enough to
+    -- measure speed, but standing perfectly still for two seconds is a stop, not a step.
+    local moved = false
+    if w.lastPos ~= nil then
+        local dx, dz = p[1] - w.lastPos[1], p[3] - w.lastPos[3]
+        moved = (dx * dx + dz * dz) > 0.04         -- twenty centimetres
+    end
+    if moved then
+        w.lastPos, w.lastMove, w.said = p, now, nil
+        return false
+    end
+    if (now - w.lastMove) > M.WALK_STUCK_MS and w.said ~= "stuck" then
+        w.said = "stuck"
+        local left = ""
+        if tp ~= nil then
+            local dx, dz = tp[1] - p[1], tp[3] - p[3]
+            left = ", осталось " .. string.format("%.0f м", math.sqrt(dx * dx + dz * dz))
+        end
+        say("Стою" .. left .. ", дальше не идёт")
+        M.walking = nil
+        return true
+    end
+    return false
+end
+
+--- Hear the server say no.
+---
+--- The server refuses a destination it cannot find standable ground for, and a refusal that
+--- is not spoken is indistinguishable from a layer that has died: the player pressed the key
+--- and the character is simply standing there.
+local function onNet(channel, payload)
+    if channel ~= M.CHANNEL then return end
+    local msg = soft(Ext.Json.Parse, payload)
+    if type(msg) ~= "table" then return end
+    if msg.cmd == "refused" then say("Туда не пройти") end
+    if msg.cmd == "stopped" then
+        -- Kept rather than spoken: the player has already heard "Стоп", and will hear this
+        -- back only if the character is still moving two seconds later. An empty "how" means
+        -- the build exports nothing that clears a character's task queue - which is the whole
+        -- explanation for a stop key that answers and does nothing, and it should reach the
+        -- player as a sentence rather than as a line in a log they cannot read.
+        M.stopHow = tostring(msg.how or "")
+        _P("[nav] stop acknowledged, how=" .. M.stopHow)
+    end
+end
+
+function M.listen()
+    if _G.A11Y_NAV_CLIENT ~= nil then
+        soft(function() Ext.Events.NetMessage:Unsubscribe(_G.A11Y_NAV_CLIENT) end)
+        _G.A11Y_NAV_CLIENT = nil
+    end
+    local id = Ext.Events.NetMessage:Subscribe(function(e)
+        onNet(soft(function() return e.Channel end), soft(function() return e.Payload end))
+    end)
+    _G.A11Y_NAV_CLIENT = id
+    return id ~= nil
 end
 
 -- combat ---------------------------------------------------------------------------
@@ -685,7 +1563,9 @@ local function targetPhrase(t)
     if t.hp ~= nil then
         bits[#bits + 1] = (t.hp <= 0) and "повержен" or (t.hp .. " из " .. tostring(t.max))
     end
-    if t.dir then bits[#bits + 1] = t.dir end
+    -- No clock bearing here either, for the same reason it left the scanner: there is no key
+    -- that turns anyone, so "на десять" is a word and a half of listening that changes nothing
+    -- the player can do. The distance is what decides whether a target is reachable.
     if t.dist then bits[#bits + 1] = string.format("%.0f м", t.dist) end
     if t.index ~= nil and t.total ~= nil and t.total > 1 then
         bits[#bits + 1] = (t.index + 1) .. " из " .. t.total
@@ -698,6 +1578,11 @@ M.lastTarget = nil
 
 --- Announce the target as it changes. This is the one readout that has to be automatic:
 --- the player is pressing left and right precisely to hear what comes next.
+--- Returns true only when it actually said something, which is what lets the pass that
+--- announced a target keep the world cursor quiet (see the reader): the game rewrites
+--- `CursorText_c` on every step of the target cycle, so the two of them together turned one
+--- press into "Пожиратель интеллекта, враг, 3 из 10, 6 м" followed by "Урон:, Атака основной
+--- рукой, Недостаточно движения" - the second one burying the first.
 function M.targetTick()
     local t = M.target()
     if t == nil then
@@ -705,9 +1590,9 @@ function M.targetTick()
         return false
     end
     local key = tostring(t.entity) .. "|" .. tostring(t.hp)
-    if key == M.lastTarget then return true end
+    if key == M.lastTarget then return false end
     M.lastTarget = key
-    if t.name == nil then return true end
+    if t.name == nil then return false end
     say(targetPhrase(t))
     return true
 end
@@ -744,6 +1629,9 @@ local function junk(s)
     if #s == 0 then return true end
     if s:find("^h%x%x%x%x%x%x%x%x") then return true end
     if s:find("^ResStr_") then return true end
+    -- A bare label. "Урон:" arrives with nothing after it - the number it introduces is drawn
+    -- somewhere this scan does not reach - so it is a colon read out loud, once per press.
+    if s:find(":%s*$") then return true end
     return s == "~" or s == "*" or s == "-" or s == ":"
 end
 
@@ -814,6 +1702,11 @@ end
 
 M.lastCursorWords = nil
 
+-- How long the same cursor reading stays uninteresting once it has been said.
+M.CURSOR_REPEAT_MS = 10000
+M.cursorSaid = {}
+M.cursorSaidN = 0
+
 function M.cursorTick()
     local parts = M.cursorParts()
     if parts == nil then
@@ -832,6 +1725,22 @@ function M.cursorTick()
         end
         return false
     end
+
+    -- Said this recently already. The cursor panel does not flicker between two readings so
+    -- much as cycle through four - verb, verb plus target, verb plus refusal, verb plus
+    -- distance - and each of them is genuinely different words, so the subset test above lets
+    -- every one of them through. Over a target cycle in combat that is four sentences per
+    -- press, none of them new. A line is worth interrupting for once; the fifth time in ten
+    -- seconds it is noise whatever it says.
+    local now = soft(Ext.Utils.MonotonicTime) or 0
+    if M.cursorSaid[key] ~= nil and (now - M.cursorSaid[key]) < M.CURSOR_REPEAT_MS then
+        M.lastCursorKey, M.lastCursorWords = key, words
+        return false
+    end
+    -- Kept small by hand: this is a cache of what was just said, not a history.
+    if M.cursorSaidN > 24 then M.cursorSaid, M.cursorSaidN = {}, 0 end
+    M.cursorSaid[key] = now
+    M.cursorSaidN = M.cursorSaidN + 1
 
     M.lastCursorKey, M.lastCursorWords = key, words
     M.lastCursor = table.concat(parts, ", ")
@@ -854,17 +1763,14 @@ function M.approach()
     local t = M.target()
     if t == nil then say("Цель не выбрана") return false end
     local uuid = soft(function() return t.entity.Uuid.EntityUuid end)
-    local msg
-    if type(uuid) == "string" and uuid ~= "" then
-        msg = { cmd = "gotoObject", uuid = uuid }
-    else
-        local p = positionOf(t.entity)
-        if p == nil then say("Не знаю, где цель") return false end
-        msg = { cmd = "goto", x = p[1], y = p[2], z = p[3] }
+    if type(uuid) ~= "string" or uuid == "" then
+        say("К этой цели нельзя подойти")
+        return false
     end
-    local body = soft(Ext.Json.Stringify, msg)
+    local body = soft(Ext.Json.Stringify, { cmd = "gotoObject", uuid = uuid })
     local r = try(function() Ext.Net.PostMessageToServer(M.CHANNEL, body) end)
     if not r.ok then say("Не получилось подойти") return false end
+    M.walkStarted(uuid, t.name)
     say("Иду к: " .. tostring(t.name) ..
         (t.dist and (", " .. string.format("%.0f м", t.dist)) or ""))
     return true
@@ -931,10 +1837,52 @@ function M.objective()
             end
         end
     end
+    -- The minimap says nothing about the task on a beach where nothing has been discovered
+    -- yet, and that is most of the time a player is lost. The journal knows - it is read and
+    -- kept by the screen side whenever it is open (Pad.journalRefresh), so the objective
+    -- survives the journal being closed.
+    if out.text == nil then
+        local b = M.bookObjective()
+        if b ~= nil then
+            out.text = b.text
+            out.quest = b.title
+            out.fromBook = true
+        end
+    end
+
     if out.text == nil and out.turns == nil and out.place == nil and #out.markers == 0 then
         return nil
     end
     return out
+end
+
+--- The task the journal knows, when the minimap has nothing.
+---
+--- The one the player last selected wins, then any quest still in progress; the completed
+--- category is skipped by name, matched without its first letter because Lua's `lower()` does
+--- not touch Cyrillic and the word is written both ways.
+function M.bookObjective()
+    local book = M.questBook
+    if type(book) ~= "table" or type(book.quests) ~= "table" then return nil end
+    local best = nil
+    for _, q in ipairs(book.quests) do
+        local cat = tostring(q.category or "")
+        if not cat:find("авершен", 1, true) then
+            local task = nil
+            for _, o in ipairs(q.objectives or {}) do
+                if not o.done and (task == nil or (o.priority or 0) < (task.priority or 0)) then
+                    task = o
+                end
+            end
+            if task ~= nil then
+                local score = (q.selected and 2 or 0) + (q.inProgress and 1 or 0)
+                if best == nil or score > best.score then
+                    best = { title = q.title, text = task.text, score = score }
+                end
+            end
+        end
+    end
+    return best
 end
 
 --- Word stems of the objective, for matching against what is standing in the world.
@@ -996,15 +1944,12 @@ end
 ---
 --- To the object where there is a uuid, so the engine stops at interaction range instead of
 --- trying to stand inside the thing; to bare coordinates otherwise.
+--- Objects only. A thing without a uuid is a thing the layer cannot send anyone to: moving by
+--- coordinates does not walk, it places, and the place may be the sea (see the server half).
 local function walkTo(it)
     local uuid = soft(function() return it.entity.Uuid.EntityUuid end)
-    local msg
-    if type(uuid) == "string" and uuid ~= "" then
-        msg = { cmd = "gotoObject", uuid = uuid }
-    else
-        msg = { cmd = "goto", x = it.pos[1], y = it.pos[2], z = it.pos[3] }
-    end
-    local body = soft(Ext.Json.Stringify, msg)
+    if type(uuid) ~= "string" or uuid == "" then return false end
+    local body = soft(Ext.Json.Stringify, { cmd = "gotoObject", uuid = uuid })
     return try(function() Ext.Net.PostMessageToServer(M.CHANNEL, body) end).ok
 end
 M.walkTo = walkTo
@@ -1039,6 +1984,9 @@ function M.questGo()
     -- The wording is repeated only when it has changed. On the fifth press in a row, the
     -- sentence is not what the player is listening for - the distance is.
     if obj.text ~= nil and obj.text ~= M.questText then
+        -- Name the quest with the task the first time it is said: out of the journal the task
+        -- alone ("Найдите способ извлечь личинку") does not say which story it belongs to.
+        if obj.quest ~= nil then parts[#parts + 1] = obj.quest end
         parts[#parts + 1] = obj.text
         M.questText = obj.text
     end
@@ -1080,7 +2028,8 @@ function M.questGo()
         -- using a thing (CharacterUseItem, UseObject, Activate - none of them exist), so the
         -- action stays on the player's button. Saying so plainly beats walking on the spot.
         parts[#parts + 1] = it.name .. ", " .. tostring(it.dir) .. ", " .. dm(d) ..
-                            ". Вы на месте, действие — кнопка A"
+                            (M.canInteract(it.entity, d) and ". Вы на месте, действие — кнопка A"
+                                                          or ". Вы на месте")
         say(table.concat(parts, ". "))
         return true
     end
@@ -1090,6 +2039,7 @@ function M.questGo()
         say(table.concat(parts, ". "))
         return false
     end
+    M.walkStarted(soft(function() return it.entity.Uuid.EntityUuid end), it.name)
     parts[#parts + 1] = "иду: " .. it.name .. ", " .. dm(d) .. ", " .. tostring(it.dir)
     say(table.concat(parts, ". "))
     return true
@@ -1150,5 +2100,11 @@ function M.calibrate(tag)
     return out
 end
 
-_P("[nav] a11y-nav loaded. Nav.around() / Nav.step(1) / Nav.where() / Nav.calibrate('t')")
+-- Stamped so a session can be told apart from the one before it. A push that does not take -
+-- because the game was not focused when the console line was sent, or because only the client
+-- half was reloaded - is otherwise invisible: the layer answers, it just answers the old way,
+-- and a whole session gets spent testing code that is not running.
+M.BUILD = "nav-2 stop/progress/live-scan"
+
+_P("[nav] a11y-nav loaded (" .. M.BUILD .. "). Nav.progress() / Nav.step(1) / Nav.where()")
 return M

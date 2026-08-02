@@ -59,6 +59,10 @@ local PLURALS = {
     ["строка"]   = { "строка", "строки", "строк" },
     ["пункт"]    = { "пункт", "пункта", "пунктов" },
     ["объект"]   = { "объект", "объекта", "объектов" },
+    ["сохранение"] = { "сохранение", "сохранения", "сохранений" },
+    ["кампания"] = { "кампания", "кампании", "кампаний" },
+    ["час"]      = { "час", "часа", "часов" },
+    ["минута"]   = { "минута", "минуты", "минут" },
 }
 
 function M.plural(n, word)
@@ -151,6 +155,62 @@ M.REVIEW_BUTTONS = {}
 
 M.review = false
 
+-- The left stick is the stop button.
+--
+-- It has to be. A scripted walk is an Osiris task and the layer's own stop key was answering
+-- "Стою" without stopping anything (see a11y-nav-server); meanwhile the one reflex a player
+-- has when the character runs off somewhere wrong is to push the stick. So that push is now
+-- what cancels the walk - no key to remember, and it is the same gesture a sighted player
+-- would make.
+--
+-- Axis events arrive continuously, several a frame, including drift on a stick nobody is
+-- touching. Hence a dead zone, and a second between one cancellation and the next.
+M.AXIS_DEAD = 0.35
+M.AXIS_QUIET_MS = 1000
+M.axisNames = {}
+M.lastAxis = nil
+M.stopSent = nil
+
+local function axisName(e)
+    local a = soft(function() return e.Axis end)
+    if a == nil then return nil end
+    local s = str(a)
+    return (s:match("([^:%.]+)$") or s)
+end
+
+local function onAxis(e)
+    local name = axisName(e) or "?"
+    -- Named once each in the log, the same way buttons were learned: the runtime's spelling of
+    -- the axes is not documented and the filter below depends on it.
+    if M.axisNames[name] == nil then
+        M.axisNames[name] = true
+        _P("[pad] axis seen: " .. name)
+    end
+
+    -- The scale is not documented and both are plausible: a normalised -1..1, or the raw
+    -- signed short SDL reports. Anything past the normalised range is taken for the latter and
+    -- brought back, so the dead zone means the same thing either way.
+    local v = tonumber(soft(function() return e.Value end)) or 0
+    if math.abs(v) > 1.5 then v = v / 32767 end
+    if math.abs(v) < M.AXIS_DEAD then return end
+    M.lastAxis = { name = name, value = v, t = now() }
+
+    -- Only the stick that walks. The right one turns the camera and a trigger is not a stick,
+    -- and neither of them means "I am taking over".
+    local low = name:lower()
+    if low:find("right", 1, true) or low:find("trigger", 1, true) or
+       low:find("camera", 1, true) then return end
+
+    local nav = _G.Nav
+    if nav == nil or nav.walking == nil then return end
+    local t = now()
+    if M.stopSent ~= nil and (t - M.stopSent) < M.AXIS_QUIET_MS then return end
+    M.stopSent = t
+    -- Queued like every other command: inside an input handler the reads the layer needs are
+    -- degraded (§9 rule 2). Not prevented, either - the stick must still drive the game.
+    M.queue[#M.queue + 1] = "stopWalk"
+end
+
 local function onPad(eventName)
     return function(e)
         if #M.raw < 12 then
@@ -161,6 +221,10 @@ local function onPad(eventName)
         local name = buttonName(e) or "?"
         local down = pressed(e)
         M.lastPad = { event = eventName, button = name, pressed = down, t = now() }
+        if eventName == "ControllerAxisInput" then
+            soft(function() onAxis(e) end)
+            return
+        end
         if eventName == "ControllerButtonInput" then
             M.log[#M.log + 1] = { t = now(), button = name, pressed = down }
             if #M.log > 120 then table.remove(M.log, 1) end
@@ -216,9 +280,13 @@ end
 -- more about the thing that is selected": close on it out there, read its description here.
 M.KEYS = {
     PAGEUP = "prev", PAGEDOWN = "next",     -- with Alt: previous / next category
-    HOME = "goto",                          -- walk to the selected entry / top of the screen
+    -- Home asks "how is the walk going", Alt+Home starts one. That way round because of which
+    -- one is pressed more: setting off happens once, and then the question is asked over and
+    -- over - are we getting closer, or is the character walking a circle - and it must be the
+    -- easier press. Stopping is no longer a key at all: the left stick does it (M.axisTick).
+    HOME = "progress",                      -- how far to the target / top of the screen
     END = "quest",                          -- the objective, or the summary of the screen
-    DELETE = "approach", DEL = "approach",  -- close on the target / details of the selection
+    DELETE = "range", DEL = "range",        -- how far the scanner looks / details of a screen
     INSERT = "read",                        -- the fight, or the screen, or the last line again
     PAUSE = "where",
 }
@@ -248,6 +316,19 @@ end
 -- of keys for "next thing" and "next kind of thing", which is how a screen reader's own
 -- navigation reads and needs no second row of bindings to remember.
 local ALT_CMD = { prev = "catPrev", next = "catNext" }
+-- Setting off is the rarer press, so it takes the modifier and the bare key reports the walk.
+-- Written this way rather than in the table above because "goto" is a Lua keyword and cannot
+-- be a key in a constructor.
+ALT_CMD["progress"] = "goto"
+-- Stopping by hand, kept as a fallback to the stick. It is on "where am I" because that is the
+-- other key about standing still, and because it is not one that is pressed by accident.
+ALT_CMD["where"] = "stop"
+-- Delete used to walk to the game's own target - the one its d-pad cycle has picked - which
+-- in a fight is a different thing from the scanner's selection and out of one is usually the
+-- same thing said twice. So the key now carries how far the scanner looks, which is asked
+-- constantly, and closing on the game's target moves to Alt, where it is still there for the
+-- fight it was written for.
+ALT_CMD["range"] = "approach"
 
 local function onKey(e)
     local k = keyName(e)
@@ -454,6 +535,39 @@ end
 function M.active(textCap, nodeCap, wantThin)
     local ws = findWidgets()
     if #ws == 0 then return nil end
+
+    -- A confirmation box is the screen for as long as it is up. It holds no focus of its own
+    -- while the screen underneath keeps one, so without this every question about "the
+    -- screen" - read it, review it, where am I - is answered by what the box is standing in
+    -- front of.
+    for i = #ws, 1, -1 do
+        local w = ws[i]
+        if w.visible ~= false and M.MODAL_NAMES[str(w.name)] then
+            local info = visibleScan(w.node, nodeCap or M.nodeCap, textCap or 40)
+            if #info.texts > 0 then
+                return { name = w.name, node = w.node, texts = info.texts,
+                         focus = info.focus, nodes = info.nodes, capped = info.capped,
+                         widgets = #ws, modal = true }
+            end
+        end
+    end
+
+    -- A panel the player opened is the screen too, and for a stronger reason than the box
+    -- above: it holds no focus at all, so without this it loses to whatever HUD widget happens
+    -- to sit higher in the stack. Checked before the focus loop, not after - a badge that
+    -- claims focus behind an open container is not what the player is looking at.
+    for i = #ws, 1, -1 do
+        local w = ws[i]
+        if w.visible ~= false and M.PANEL_NAMES[str(w.name)] then
+            local info = visibleScan(w.node, nodeCap or M.nodeCap, textCap or 40)
+            if #info.texts > 0 then
+                return { name = w.name, node = w.node, texts = info.texts,
+                         focus = info.focus, nodes = info.nodes, capped = info.capped,
+                         widgets = #ws, panel = true }
+            end
+        end
+    end
+
     local fallback, thin = nil, nil
     for i = #ws, 1, -1 do
         local w = ws[i]
@@ -497,6 +611,11 @@ M.SCREEN_TITLES = {
     -- is the value of the first spinner, so arriving on it announced "По выбору".
     CharacterCreation_c = "Создание персонажа",
     CharacterCreation = "Создание персонажа",
+    -- The loot panel's first string is the weight readout ("49,1"), which as a title says
+    -- nothing about what has just opened in front of the player.
+    Container_c = "Контейнер",
+    Trade_c = "Обмен",
+    Loot_c = "Добыча",
 }
 
 local function screenTitle(a)
@@ -564,7 +683,7 @@ local function refreshLines(force)
     if M.linesFrom ~= "screen" and not force then return end
     local a = M.active(120, 2500)
     if a == nil then return end
-    M.lines, M.linesFrom = a.texts, "screen"
+    M.lines, M.linesFrom = M.linesOf(a), "screen"
     if M.cursor > #M.lines then M.cursor = #M.lines end
 end
 
@@ -609,6 +728,13 @@ local function perform(cmd)
         -- under the cursor.
         if nav ~= nil then nav.goTo()
         else refreshLines(true) M.cursor = 1 sayLine(0) end
+    elseif cmd == "progress" then
+        -- The question a walk raises and the layer could not answer: how far is left, and is
+        -- that number going down. Without it "иду к рюкзаку" is a promise with no way to check
+        -- it, and a character walking a circle sounds exactly like one walking a path.
+        -- On a screen the key keeps Home's old meaning, the top of the list.
+        if nav ~= nil then nav.progress()
+        else refreshLines(true) M.cursor = 1 sayLine(0) end
     elseif cmd == "quest" then
         -- One key for "where does the story want me": the objective, its object, and the walk
         -- there - and when there is no objective, the nearest map marker (Nav.questGo).
@@ -617,9 +743,8 @@ local function perform(cmd)
         if nav ~= nil then nav.questGo() else perform("summary") end
     elseif cmd == "approach" then
         -- Closing on what the game's own target cycle has selected is the one move that cycle
-        -- cannot make for itself: it selects, it does not walk.
-        -- On a screen there is nothing to walk to and "where am I" is already on Pause, so
-        -- the key asks the screen to say more about whatever is selected.
+        -- cannot make for itself: it selects, it does not walk. On Alt now, because in the
+        -- open world it says the same thing as walking to the scanner's own selection.
         if nav ~= nil then nav.approach() else perform("details") end
     elseif cmd == "details" then
         -- Deliberately a key and not an announcement. The description of a value is said
@@ -635,6 +760,22 @@ local function perform(cmd)
         if lines == nil then perform("read") return end
         M.lines, M.cursor, M.linesFrom = lines, 0, "summary"
         say(table.concat(lines, ", "))
+    elseif cmd == "range" then
+        -- How far "around me" reaches - the question a player exploring blind asks most
+        -- often, which is why it sits on a key of its own. On a screen the key keeps its old
+        -- meaning, the details of what is selected: there distances mean nothing.
+        if nav ~= nil then nav.radiusStep(1) else perform("details") end
+    elseif cmd == "stop" then
+        -- Alt+Pause: the deliberate stop, kept because the stick is a reflex and a reflex can
+        -- be wrong about whether it worked. On a screen there is nothing walking, so the key
+        -- keeps its plain meaning there.
+        if nav ~= nil then nav.stop() else perform("where") end
+    elseif cmd == "stopWalk" then
+        -- The stick was pushed while the layer had the character walking somewhere. Taken from
+        -- _G.Nav rather than navMode(): whatever is on screen, the character is moving and the
+        -- player has just said they want it to stop.
+        local n = _G.Nav
+        if n ~= nil and n.walking ~= nil then n.stop() end
     elseif cmd == "catPrev" or cmd == "catNext" then
         local delta = (cmd == "catNext") and 1 or -1
         if nav ~= nil then nav.categoryStep(delta) else refreshLines() sayLine(delta * 10) end
@@ -656,8 +797,8 @@ local function perform(cmd)
             perform("repeat")
             return
         end
-        M.lines, M.cursor, M.linesFrom = a.texts, 0, "screen"
-        say(table.concat(a.texts, ". "))
+        M.lines, M.cursor, M.linesFrom = M.linesOf(a), 0, "screen"
+        say(table.concat(M.lines, ". "))
     elseif cmd == "where" then
         -- Where you are, largest first: the screen, the section of it, the control. The old
         -- wording said the widget's internal name ("Экран CharacterCreation_c") and took the
@@ -1141,6 +1282,12 @@ function M.detailsLines()
 
     local a = M.active(10)
     if a == nil then return nil end
+    -- On a save screen "tell me more" is about the entry under the cursor: everything the
+    -- game keeps about it, and what can be done with it.
+    if M.saveScreens[str(a.name)] ~= false then
+        local lines = soft(function() return M.saveDetails(a.node, nil, str(a.name)) end)
+        if lines ~= nil and #lines > 0 then return lines end
+    end
     local marks = landmarks(a.node)
     local out = {}
     if marks.sub ~= nil then
@@ -1158,11 +1305,1199 @@ end
 function M.summaryLines()
     local a = M.active(10)
     if a == nil then return nil end
+    -- The same question on a save screen - what does all this add up to - is the campaigns
+    -- and how much is in each.
+    if M.saveScreens[str(a.name)] ~= false then
+        local lines = soft(function() return M.saveSummary(a.node, str(a.name)) end)
+        if lines ~= nil and #lines > 0 then return lines end
+    end
     local marks = landmarks(a.node)
     if marks.summary == nil then return nil end
     local t = visibleScan(marks.summary, 900, 80).texts
     if #t == 0 then return nil end
     return t
+end
+
+--- The playthrough's name, which is on a descendant named Title.
+---
+--- Not the Expander's own ToString: that reads "Expander: ListBox", and not the first text
+--- under it either, for the same reason - a text walk from the group header reaches the
+--- template's own words before it reaches the save's. The template names the element that
+--- holds the caption, so ask for it by name.
+local function titleUnder(node)
+    local found = nil
+    local function rec(o, d)
+        if o == nil or found ~= nil or d > 7 then return end
+        local p = props(o)
+        if str(p.Name) == "Title" then
+            -- The caption is the whole of ToString here, not its tail: a node rendering a
+            -- name has no class prefix at all ("Лаэзель", not "TextBlock: Лаэзель"), so
+            -- splitToString hands it back as the class and the label comes out nil.
+            local rt = A.realType(o)
+            found = A.firstText(p.Text, select(2, A.splitToString(rt)), rt)
+            -- In the journal the same node is a template placeholder ("[ForceUpdate]") with
+            -- the words in a Run below it, so the walk has to go one level further before
+            -- deciding there is no caption here.
+            if found == nil then found = A.collectText(o, 20, 4)[1] end
+            if found ~= nil then return end
+        end
+        local ch, cn = A.kids(o)
+        for i = 1, cn do rec(ch[i], d + 1) end
+    end
+    rec(node, 0)
+    return found
+end
+
+-- Save screens: a list the game navigates itself ------------------------------------
+--
+-- The load screen is where "read the widget" finally runs out. Its rows are there, realised
+-- and visible - `ListBoxItem > ContentControl ControlRoot > Grid GridRoot > Title` with two
+-- Runs named TitleName and Location - and every one of them is **empty**: the item template
+-- binds to the row's data and the binding leaves nothing in the tree to read. That is why
+-- expanding a campaign went silent while the group headers, whose caption is an ordinary text
+-- node, read perfectly.
+--
+-- The data is right there though, and it is richer than the row ever was:
+--
+--   ls.UIWidget LoadGame_c
+--     DataContext ui::DCWidget   SelectedSave, ExistingSaves, ExistingPlaythroughs,
+--                                HasSaveGames, IsSaving
+--     ...
+--       ItemsControl SavegamesList          logical children: one record per campaign -
+--         Expander Playthrough                ProtagonistName, Saves, LatestSave, IsSelected
+--           ls.LSToggleButton ExpanderButton  the caption, and the Noesis focus
+--           ListBox PlaythroughSavegames    logical children: one record per save -
+--                                             Title, Type, TimeString, PlayTimeString,
+--                                             LevelName, Difficulty, Validity, SaveID,
+--                                             HasMods, HasMissingMods, IsHonourMode
+--       Control PresenterControl            the detail panel, showing SelectedSave
+--       StackPanel ButtonPrompts            LoadBtn / DelBtn / DelCampaignBtn / BackBtn
+--
+-- Two things follow, and both are why this needs its own reader rather than another patch to
+-- the focus watcher.
+--
+-- **The game's cursor is not the Noesis focus here.** With a group expanded and the focus
+-- still sitting on its ExpanderButton, the prompts read "Загрузить игру" and "Удалить
+-- сохранение" and the detail panel showed a save - the game had moved on and the focus had
+-- not. So the position is taken from the list's own `SelectedIndex` and the content from the
+-- widget's `SelectedSave`, and the focus is used for one thing only: telling a header from a
+-- row.
+--
+-- **The prompts are the screen's own answer to "what can I do here".** They change with what
+-- is under the cursor - on a collapsed header LoadBtn reads "Вкл/выкл сворачивание списка" -
+-- and each carries the input event the game binds to it, which names the pad button. That is
+-- the whole set of operations on a save, straight from the game, with nothing hardcoded.
+
+-- Which pad button raises an event, for reading the prompts out loud. Taken from the binding
+-- table (§F13): the four face buttons are what the prompt strip ever uses.
+local PROMPT_BUTTON = {
+    UIAccept = "A", UICancel = "B", UIMessageBoxX = "X", UIMessageBoxY = "Y",
+    UIDelete = "Y", UIMessageBoxA = "A", UIMessageBoxB = "B",
+}
+
+-- Confirmation boxes ----------------------------------------------------------------
+--
+-- Deleting a save raises `MessageBox_c`, a widget of its own on top of the screen. Three
+-- things about it decide how it has to be read, and the first two are why it was silent:
+--
+--   * **it holds no focus at all**, while the screen underneath keeps its own - so the focus
+--     search answers with the save list behind the box, and `M.active` does too, since a
+--     widget with a focus wins there outright;
+--   * **nothing in it is marked** - no IsSelected, no IsFocused, no highlight property
+--     anywhere; the two buttons differ only in width;
+--   * **and there is nothing to mark.** Each action carries a `BoundEvent`
+--     (`UIMessageBoxA`, `UIMessageBoxB`), which is to say the box is not a list that is
+--     navigated but two buttons that are pressed. "A - Да, B - Нет" is the whole of it, and
+--     it is exact rather than a guess about where a highlight sits.
+--
+--   ls.UIWidget MessageBox_c
+--     Grid bgFade > StackPanel
+--       Title "Удалить сохранение"
+--       ItemsControl ActionsList     logical children: the actions, named by loca handle,
+--         ... ls.LSButton Btn > Run "Да"    each with BoundEvent and ActionCommandParameter
+--
+-- The same widget carries an `ls.LSTextBox Input` and a countdown, so naming a save and the
+-- timed prompts land here too.
+
+M.MODAL_NAMES = { MessageBox_c = true, MessageBox = true }
+local MODAL_NAMES = M.MODAL_NAMES
+
+-- Panels the player opens on purpose, which hold no Noesis focus of their own.
+--
+-- Looting was silent and this is why. Standing at an opened rucksack the tree carries
+-- `Container_c` with twelve strings in it - the weight, the capacity, eight item names - so
+-- nothing was hidden and nothing needed decoding. But the widget claims no focus, and a
+-- session is exactly the case where nothing else does either (§D12), so the layer never
+-- decided a screen was open: `M.active` walks the stack from the top and stops at the first
+-- widget with *substance*, which up there is `Overlay` or `WorldContextMenu`, and the review
+-- keys stayed with the world scanner.
+--
+-- So these win outright while they are visible, the way a message box does - and unlike a
+-- message box they are not modal, they are simply what the player is looking at.
+M.PANEL_NAMES = {
+    Container_c = true,          -- a chest, a crate, a body, a rucksack on the sand
+    Trade_c = true,              -- the same panel's other half
+    PartyInventory_c = true,
+    Inventory_c = true,
+    Loot_c = true,
+}
+
+--- The confirmation box on top of everything, read whole: what it asks, and what answering
+--- it costs a button-press.
+function M.messageBox(ws)
+    ws = ws or findWidgets()
+    local node = nil
+    for i = #ws, 1, -1 do
+        local w = ws[i]
+        if w.visible ~= false and MODAL_NAMES[str(w.name)] then node = w.node break end
+    end
+    if node == nil then return nil end
+
+    local title, body, list = nil, {}, nil
+    local function rec(o, depth)
+        if o == nil or depth > 12 or #body > 8 then return end
+        local p = props(o)
+        if p.IsVisible == false then return end
+        local nm = str(p.Name)
+        if nm == "ActionsList" then list = o return end
+        local cls, label = A.splitToString(A.realType(o))
+        if A.NO_TEXT[cls] then return end
+        for _, s in ipairs(A.strings(p.Text, label)) do
+            if A.looksLikeText(s) then
+                s = loca(s:gsub("^%s+", ""):gsub("%s+$", ""))
+                if nm == "Title" and title == nil then title = s
+                elseif title ~= s and body[#body] ~= s then body[#body + 1] = s end
+            end
+        end
+        local ch, cn = A.kids(o)
+        for i = 1, cn do rec(ch[i], depth + 1) end
+    end
+    rec(node, 0)
+
+    local actions = {}
+    if list ~= nil then
+        local ch, cn = A.kids(list)
+        for i = 1, cn do
+            local p = props(ch[i])
+            if p.BoundEvent ~= nil then
+                -- The action's own name is the localisation handle of its caption, which is
+                -- steadier than the button template built around it.
+                local caption = loca(str(p.Name))
+                if type(caption) ~= "string" or caption:find("^h%x") then
+                    caption = A.collectText(ch[i], 20, 6)[1]
+                end
+                local button = PROMPT_BUTTON[str(p.BoundEvent)]
+                if caption ~= nil then
+                    actions[#actions + 1] = button and (button .. " — " .. caption) or caption
+                end
+            end
+        end
+        if #actions == 0 then
+            for _, s in ipairs(A.collectText(list, 60, 8)) do actions[#actions + 1] = s end
+        end
+    end
+
+    local lines = {}
+    if title ~= nil then lines[#lines + 1] = title end
+    for _, s in ipairs(body) do lines[#lines + 1] = s end
+    if #actions > 0 then lines[#lines + 1] = table.concat(actions, ", ") end
+    if #lines == 0 then return nil end
+    return { node = node, lines = lines, key = table.concat(lines, "|") }
+end
+
+local SAVE_KIND = { Autosave = "Автосохранение", QuickSave = "Быстрое сохранение" }
+
+local MONTHS = { "января", "февраля", "марта", "апреля", "мая", "июня",
+                 "июля", "августа", "сентября", "октября", "ноября", "декабря" }
+
+--- "31/7/2026 02:19" as a date a voice can read.
+---
+--- Left alone if it does not parse: a different locale writes the date differently and a
+--- half-understood string is worse than the game's own.
+local function saveWhen(s)
+    if type(s) ~= "string" then return nil end
+    local d, m, y, hh, mm = s:match("^(%d+)/(%d+)/(%d+)%s+(%d+):(%d+)")
+    if d == nil then return s end
+    local month = MONTHS[tonumber(m)]
+    if month == nil then return s end
+    return tonumber(d) .. " " .. month .. " " .. y .. ", " .. hh .. ":" .. mm
+end
+M.saveWhen = saveWhen
+
+--- "1ч 39м" spelled out - the game's own form is read as two letters.
+local function savePlaytime(s)
+    if type(s) ~= "string" then return nil end
+    local h, m = s:match("^(%d+)%s*ч%s*(%d+)%s*м")
+    if h == nil then return s end
+    h, m = tonumber(h), tonumber(m)
+    local parts = {}
+    if h > 0 then parts[#parts + 1] = M.plural(h, "час") end
+    if m > 0 or h == 0 then parts[#parts + 1] = M.plural(m, "минута") end
+    return table.concat(parts, " ")
+end
+
+--- What a save is called. Autosaves and quicksaves are numbered slots with machine names
+--- ("AutoSave_4"), and only a manual save carries something the player chose.
+local function saveName(rec)
+    local title = tostring(rec.Title or "")
+    local word = SAVE_KIND[tostring(rec.Type)]
+    if word == nil then
+        if title == "" then return "Сохранение" end
+        return title
+    end
+    local n = title:match("_(%d+)$")
+    if n == nil then return word end
+    return word .. " " .. n
+end
+
+--- The things that decide whether a save can be loaded at all, and the one that says it must
+--- not be lost. Said with the entry rather than kept for the details, because a player
+--- stepping through a list is choosing, and these are what the choice turns on.
+local function saveFlags(rec)
+    local out = {}
+    if rec.IsHonourMode == true then out[#out + 1] = "режим чести" end
+    if rec.HasMissingMods == true then out[#out + 1] = "не хватает модов" end
+    if rec.Validity ~= nil and tostring(rec.Validity) ~= "Valid" then
+        out[#out + 1] = "нельзя загрузить"
+    end
+    return out
+end
+
+--- The record behind a list item, or nil if this child is not one.
+---
+--- The logical children of these lists are the data items themselves, with the item presenter
+--- among them - so the presence of SaveID is what separates a save from the machinery.
+local function saveRecord(o)
+    local p = soft(function() return o:GetAllProperties() end)
+    if type(p) ~= "table" or p.SaveID == nil then return nil end
+    return p
+end
+
+--- One entry, said the way a list is stepped through: what it is, where and when, and where
+--- in the list it sits.
+local function saveLine(rec, index, count)
+    local parts = { saveName(rec) }
+    local where = loca(rec.LevelName)
+    if type(where) == "string" and where ~= "" and not where:find("^h%x") then
+        parts[#parts + 1] = where
+    end
+    local when = saveWhen(rec.TimeString)
+    if when ~= nil then parts[#parts + 1] = when end
+    for _, f in ipairs(saveFlags(rec)) do parts[#parts + 1] = f end
+    if index ~= nil and count ~= nil and count > 1 then
+        parts[#parts + 1] = index .. " из " .. count
+    end
+    return table.concat(parts, ", ")
+end
+M.saveLine = saveLine
+
+--- One campaign: whose it is, how much is in it, and whether it is open.
+---
+--- `short` is for the list of them all, where the word "кампания" before every name and the
+--- position of a line being read in order are both noise.
+local function groupLine(g, index, count, short)
+    local parts = { g.name or "Прохождение" }
+    if not short then parts[#parts + 1] = "кампания" end
+    if g.count ~= nil and g.count > 0 then
+        parts[#parts + 1] = M.plural(g.count, "сохранение")
+    end
+    parts[#parts + 1] = g.expanded and "развёрнуто" or "свёрнуто"
+    if not short and index ~= nil and count ~= nil and count > 1 then
+        parts[#parts + 1] = index .. " из " .. count
+    end
+    return table.concat(parts, ", ")
+end
+M.groupLine = groupLine
+
+--- Is this widget a save screen? Answered from the model, so it holds for the load screen,
+--- the in-game save screen and whatever else is built on the same context.
+---
+--- Remembered per screen name: the answer cannot change under one name, and the reader asks
+--- on every pass.
+M.saveScreens = {}
+
+local function saveContext(widget, name)
+    if name ~= nil and M.saveScreens[name] == false then return nil end
+    local dc = props(widget).DataContext
+    if type(dc) ~= "userdata" then
+        if name ~= nil then M.saveScreens[name] = false end
+        return nil
+    end
+    local dp = soft(function() return dc:GetAllProperties() end)
+    if type(dp) ~= "table" or dp.ExistingSaves == nil then
+        if name ~= nil then M.saveScreens[name] = false end
+        return nil
+    end
+    if name ~= nil then M.saveScreens[name] = true end
+    return dc, dp
+end
+M.saveContext = saveContext
+
+--- The campaign groups, without descending into the rows.
+---
+--- The economy matters: an expanded campaign of 36 saves is 500-odd nodes of realised template
+--- and none of it says anything. The walk therefore stops at three names - the expander
+--- itself, its header button and its list - and reads the rest as data (the count comes from
+--- the campaign's own `Saves` collection, which unlike most proxied userdata answers to `#`).
+local function saveGroups(widget, wantSaves)
+    local groups, n = {}, 0
+
+    local function inGroup(o, g, depth)
+        if o == nil or depth > 6 then return end
+        local p = props(o)
+        local nm = str(p.Name)
+        if nm == "ExpanderButton" then
+            if p.IsFocused == true or p.IsKeyboardFocused == true then g.focused = true end
+            return
+        end
+        if nm == "PlaythroughSavegames" then
+            local idx = tonumber(p.SelectedIndex)
+            if idx ~= nil and idx >= 0 then g.index = idx + 1 end
+            local ch, cn = A.kids(o)
+            local saves = wantSaves and {} or nil
+            local count = 0
+            for i = 1, cn do
+                local rec = saveRecord(ch[i])
+                if rec ~= nil then
+                    count = count + 1
+                    if saves ~= nil then saves[count] = rec end
+                end
+            end
+            if count > 0 then g.count, g.saves = count, saves end
+            return                      -- never descend into the rows: they say nothing
+        end
+        local ch, cn = A.kids(o)
+        for i = 1, cn do inGroup(ch[i], g, depth + 1) end
+    end
+
+    local function rec(o, depth)
+        if o == nil or depth > 20 or n > 500 then return end
+        n = n + 1
+        local p = props(o)
+        if p.IsVisible == false then return end
+        if p.IsExpanded ~= nil then
+            local g = { expanded = p.IsExpanded == true }
+            local dc = p.DataContext
+            if type(dc) == "userdata" then
+                local dp = soft(function() return dc:GetAllProperties() end)
+                if type(dp) == "table" then
+                    if type(dp.ProtagonistName) == "string" and dp.ProtagonistName ~= "" then
+                        g.name = dp.ProtagonistName
+                    end
+                    if dp.Saves ~= nil then
+                        local coll = soft(function() return dc:GetProperty("Saves") end)
+                        local len = tonumber(soft(function() return #coll end))
+                        if len ~= nil and len > 0 then g.count = len end
+                    end
+                end
+            end
+            -- The campaign's name is on a descendant named Title when the model does not
+            -- give it up - the same place the group headers were read from before.
+            if g.name == nil then g.name = titleUnder(o) end
+            inGroup(o, g, 0)
+            groups[#groups + 1] = g
+            return
+        end
+        local ch, cn = A.kids(o)
+        for i = 1, cn do rec(ch[i], depth + 1) end
+    end
+
+    rec(widget, 0)
+    M.saveWalk = n
+    return groups
+end
+M.saveGroups = saveGroups
+
+--- Where the game's cursor is on a save screen, and what it is on.
+---
+--- `focused` decides only one thing: whether the cursor is on a campaign header or inside its
+--- list. Everything else comes from the model, because the focus here lags a step behind the
+--- game's own navigation.
+function M.saveState(widget, focused, wantSaves, name)
+    local dc, dp = saveContext(widget, name)
+    if dc == nil then return nil end
+
+    local st = { saving = dp.IsSaving == true, hasSaves = dp.HasSaveGames == true }
+    if dp.SelectedSave ~= nil then
+        local live = soft(function() return dc:GetProperty("SelectedSave") end)
+        if live ~= nil then st.rec = saveRecord(live) end
+    end
+
+    st.groups = saveGroups(widget, wantSaves)
+    for i, g in ipairs(st.groups) do
+        if g.focused then st.group, st.groupIndex = g, i end
+    end
+    -- With no focus anywhere - the state the screen is in for a moment after it opens - the
+    -- campaign the game has selected is the one holding the save it is showing.
+    if st.group == nil and st.rec ~= nil then
+        for i, g in ipairs(st.groups) do
+            if g.index ~= nil then st.group, st.groupIndex = g, i end
+        end
+    end
+
+    local g = st.group
+    st.index = g and g.index
+    st.count = g and g.count
+    -- On a header the game offers to fold the list; on a row it offers to load it. The
+    -- expander state is the honest signal, and the list's own selection confirms it: a
+    -- collapsed campaign selects nothing at all (SelectedIndex is -1).
+    st.onRow = (g ~= nil and g.expanded and g.index ~= nil)
+    if focused ~= nil and str(props(focused).Name) ~= "ExpanderButton" then
+        st.onRow = st.onRow or (st.rec ~= nil)
+    end
+    return st
+end
+
+--- What can be done with what is under the cursor, in the game's own words.
+---
+--- Read rather than hardcoded: the captions change with the cursor, and the button that
+--- raises each one is named by its BoundEvent.
+function M.savePrompts(widget)
+    -- Found by name and read from there, rather than by walking the screen for buttons: the
+    -- save list sits before the strip in the tree, and an expanded campaign is enough nodes
+    -- to exhaust any sane budget before the prompts are reached - the same trap the
+    -- nine-slice frame set on character creation.
+    local strip = nil
+    local function find(o, depth)
+        if o == nil or strip ~= nil or depth > 8 then return end
+        local p = props(o)
+        if p.IsVisible == false then return end
+        local nm = str(p.Name)
+        if nm == "ButtonPrompts" then strip = o return end
+        if nm == "SavegamesListHolder" or nm == "PlaythroughSavegames" then return end
+        local ch, cn = A.kids(o)
+        for i = 1, cn do find(ch[i], depth + 1) end
+    end
+    find(widget, 0)
+    if strip == nil then return {} end
+
+    local out, seen = {}, {}
+    local ch, cn = A.kids(strip)
+    for i = 1, cn do
+        local p = props(ch[i])
+        if p.IsVisible ~= false and p.IsEnabled ~= false then
+            local text = A.collectText(ch[i], 40, 6)[1]
+            if text ~= nil and A.looksLikeText(text) and not seen[text] then
+                seen[text] = true
+                local button = PROMPT_BUTTON[str(p.BoundEvent)]
+                out[#out + 1] = button and (button .. " — " .. text) or text
+            end
+        end
+    end
+    return out
+end
+
+--- Everything the game knows about the save under the cursor, on demand.
+function M.saveDetails(widget, st, name)
+    st = st or M.saveState(widget, nil, false, name)
+    if st == nil then return nil end
+    local out = {}
+    if st.rec ~= nil then
+        local rec = st.rec
+        out[#out + 1] = saveName(rec)
+        if st.group ~= nil and st.group.name ~= nil then
+            out[#out + 1] = "Кампания " .. st.group.name
+        end
+        local where = loca(rec.LevelName)
+        if type(where) == "string" and not where:find("^h%x") then out[#out + 1] = where end
+        local when = saveWhen(rec.TimeString)
+        if when ~= nil then out[#out + 1] = when end
+        local played = savePlaytime(rec.PlayTimeString)
+        if played ~= nil then out[#out + 1] = "Время игры " .. played end
+        local diff = loca(rec.Difficulty)
+        if type(diff) == "string" and diff ~= "" and not diff:find("^h%x") then
+            out[#out + 1] = "Сложность " .. diff
+        end
+        if type(rec.Description) == "string" and rec.Description ~= "" then
+            out[#out + 1] = rec.Description
+        end
+        if rec.HasMods == true or rec.HasUnofficialMods == true then
+            out[#out + 1] = "с модами"
+        end
+        for _, f in ipairs(saveFlags(rec)) do out[#out + 1] = f end
+        if type(rec.Version) == "string" and rec.Version ~= "" then
+            out[#out + 1] = "Версия " .. rec.Version
+        end
+        if st.index ~= nil and st.count ~= nil then
+            out[#out + 1] = st.index .. " из " .. st.count
+        end
+    end
+    local prompts = M.savePrompts(widget)
+    if #prompts > 0 then out[#out + 1] = "Действия: " .. table.concat(prompts, ", ") end
+    if #out == 0 then return nil end
+    return out
+end
+
+--- The screen at a glance: every campaign, how much is in it, and when it was last played.
+function M.saveSummary(widget, name)
+    local st = M.saveState(widget, nil, false, name)
+    if st == nil or #st.groups == 0 then return nil end
+    local out = { M.plural(#st.groups, "кампания") }
+    for i, g in ipairs(st.groups) do
+        out[#out + 1] = groupLine(g, i, #st.groups, true)
+    end
+    return out
+end
+
+--- The whole screen as lines, for the review cursor - which is the only way to survey a save
+--- list without moving the game's cursor through it one entry at a time.
+function M.saveScreenLines(widget, name)
+    local st = M.saveState(widget, nil, true, name)
+    if st == nil or #st.groups == 0 then return nil end
+    local out = {}
+    for i, g in ipairs(st.groups) do
+        out[#out + 1] = groupLine(g, i, #st.groups)
+        if g.expanded and g.saves ~= nil then
+            for j, rec in ipairs(g.saves) do
+                out[#out + 1] = saveLine(rec, j, #g.saves)
+            end
+        end
+    end
+    return out
+end
+
+--- The lines of a screen for the review cursor: the save list where there is one, and the
+--- widget's own text everywhere else.
+---
+--- On a save screen the widget's text is the title, the detail panel and the prompts - the
+--- list itself is not in it, because the rows carry no text. Reviewing the screen and never
+--- reaching the saves is the same silence as before, one step removed.
+function M.linesOf(a)
+    if a == nil then return {} end
+    if a.node ~= nil and M.saveScreens[str(a.name)] ~= false then
+        local lines = soft(function() return M.saveScreenLines(a.node, str(a.name)) end)
+        if lines ~= nil and #lines > 0 then return lines end
+    end
+    return a.texts or {}
+end
+
+--- Is the game writing a save right now?
+---
+--- Quicksaving and autosaving are the two save operations with no screen at all: the game
+--- puts a small panel on the always-on-top overlay and takes it away again, and a player who
+--- cannot see it has no way of knowing whether F5 landed. `AlwaysOnTopOverlay > SavingPanel`
+--- is that panel, and it is four nodes deep, so this is affordable on every pass.
+local function savingNow(ws)
+    for i = 1, #ws do
+        local w = ws[i]
+        if w.visible ~= false and str(w.name) == "AlwaysOnTopOverlay" then
+            local found = nil
+            local function rec(o, d)
+                if o == nil or found ~= nil or d > 4 then return end
+                local p = props(o)
+                if str(p.Name) == "SavingPanel" then found = (p.IsVisible ~= false) return end
+                local ch, cn = A.kids(o)
+                for k = 1, cn do rec(ch[k], d + 1) end
+            end
+            rec(w.node, 0)
+            return found
+        end
+    end
+    return nil
+end
+M.savingNow = savingNow
+
+--- Is this the list itself under the focus, rather than something standing over it?
+---
+--- The three shapes the list ever focuses: the campaign header, the row container of a save
+--- and the row itself. Anything else on a save screen - a confirmation box, the name field of
+--- the save dialog - is not the list, and belongs to the ordinary reader.
+local SAVE_LIST_NAMES = { ExpanderButton = true, ControlRoot = true,
+                          PlaythroughSavegames = true, SavegamesList = true }
+
+function M.inSaveList(node)
+    if node == nil then return false end
+    local p = props(node)
+    if SAVE_LIST_NAMES[str(p.Name)] then return true end
+    local cls = select(1, A.splitToString(A.realType(node)))
+    return cls:find("ListBoxItem", 1, true) ~= nil
+end
+
+--- Say where the cursor is, when it has moved.
+---
+--- Two states and one key, because a header and a row are different places and the same
+--- campaign is both. Arriving in a list says the campaign as well as the entry: that is the
+--- one moment the player needs both, and afterwards the campaign would be noise on every step.
+M.saveKey = nil
+M.saveGroupKey = nil
+
+function M.saveTick(widget, focused, name)
+    local st = M.saveState(widget, focused, false, name)
+    if st == nil then return false end
+
+    local g = st.group
+    local gkey = tostring(g and g.name) .. "|" .. tostring(g and g.expanded) .. "|" ..
+                 tostring(st.groupIndex)
+    local place = (st.onRow and st.rec ~= nil) and "s" or "g"
+    local key = place .. "|" .. gkey
+    if place == "s" then
+        key = key .. "|" .. tostring(st.index) .. "|" .. tostring(st.rec.Title) ..
+              "|" .. tostring(st.rec.TimeString)
+    end
+    if key == M.saveKey then return false end
+
+    local movedGroup = (gkey ~= M.saveGroupKey)
+    M.saveKey, M.saveGroupKey = key, gkey
+    if g == nil then return false end
+
+    -- Arriving in a campaign names it; stepping inside one does not, or the campaign would
+    -- be said before every single entry and bury the one thing that changed.
+    if place == "g" or movedGroup then
+        pend(groupLine(g, st.groupIndex, #st.groups))
+    end
+    if place == "s" then
+        pend(saveLine(st.rec, st.index, st.count))
+    end
+    return true
+end
+
+-- The journal: what the story wants, in words ---------------------------------------
+--
+-- On the crash-site beach the layer answered "задача не видна", and it was telling the truth:
+-- the objective is read out of the Minimap's *text*, the game writes nothing there, the map
+-- holds exactly one marker (the player) and the waypoint list is empty. Nothing in the client
+-- ECS helps either - the played character carries 142 components and not one is a journal,
+-- `MapMarkerStyle` holds no entities at all.
+--
+-- The journal itself does have it, as data:
+--
+--   ls.UIWidget JournalQuests_c
+--     ls.LSToggleButton ExpanderButton   Title "Основное задание"     ← a category
+--       ls.LSToggleButton ExpanderButton Title "Найти лекарство"      ← a quest
+--         DATA  IsSelected, IsExpanded, QuestIsInProgress, HasPlayerSeenLastUpdate
+--         DATA  Description (a loca handle), IsCompleted, ObjectivePriority   ← the objective
+--
+-- Two things follow. The objective is a localisation handle, so it reads as text only through
+-- `Ext.Loca` - the tree shows the quest's name and never its task. And the widget is
+-- destroyed when the journal closes, so it has to be **remembered**: the player opens the
+-- journal once and the layer keeps the book, which is what makes `End` in the middle of a
+-- field able to say what the story is asking for.
+
+M.JOURNAL_WIDGETS = { JournalQuests_c = true, JournalQuests = true, JournalQuest_c = true }
+
+M.book = nil
+M.bookAt = 0
+
+--- The quests and their tasks, read out of the open journal.
+---
+--- Written against what the screen actually is, which is not what it looks like. There is no
+--- expander element to descend: `IsExpanded` exists **only on data records**, the captions sit
+--- in a `Run` inside a `[ForceUpdate]` node named Title, and the task does not live under its
+--- quest at all - it is in the detail panel on the right, which shows whichever quest is
+--- selected. So the walk keeps two things in step: the caption last seen, which names the
+--- quest a state record belongs to, and the tasks, which belong to the selected quest
+--- wherever in the tree they turn up.
+local function journalScan(widget)
+    local quests, tasks, lastTitle = {}, {}, nil
+    local budget = { n = 2000 }
+    local function rec(o, depth)
+        if o == nil or budget.n <= 0 or depth > 24 then return end
+        budget.n = budget.n - 1
+        local p = props(o)
+        if p.IsVisible == false then return end
+
+        -- A task: the text is a handle, and the priority is the order the game shows them in.
+        if p.ObjectivePriority ~= nil or (p.Description ~= nil and p.IsCompleted ~= nil) then
+            local text = loca(str(p.Description))
+            if type(text) == "string" and text ~= "" and not text:find("^h%x")
+               and not text:find("^ls::") then
+                tasks[#tasks + 1] = { text = text, done = p.IsCompleted == true,
+                                      priority = tonumber(p.ObjectivePriority) or 0 }
+            end
+            return
+        end
+
+        -- A quest's state, which follows its caption in the tree.
+        if p.QuestIsInProgress ~= nil then
+            quests[#quests + 1] = { title = lastTitle or "Задание",
+                                    selected = p.IsSelected == true,
+                                    inProgress = p.QuestIsInProgress == true,
+                                    expanded = p.IsExpanded == true }
+            return
+        end
+
+        if str(p.Name) == "Title" then
+            local t = A.collectText(o, 20, 4)[1]
+            if t ~= nil then lastTitle = t end
+        end
+
+        local ch, cn = A.kids(o)
+        for i = 1, cn do rec(ch[i], depth + 1) end
+    end
+    rec(widget, 0)
+    return quests, tasks
+end
+M.journalScan = journalScan
+
+--- Keep the book while the journal is open, and hand it to the world reader.
+---
+--- Rate-limited rather than per pass: the walk is a thousand nodes, and the journal changes
+--- only when the player moves in it. Nothing is said here - the focus reading does the
+--- talking; this is only what makes it possible to say anything at all later.
+function M.journalRefresh(widget, force)
+    local t = now()
+    if not force and (t - M.bookAt) < 1000 then return M.book end
+    M.bookAt = t
+    local quests, tasks = nil, nil
+    soft(function() quests, tasks = journalScan(widget) end)
+    if quests == nil or (#quests == 0 and (tasks == nil or #tasks == 0)) then return M.book end
+
+    -- The tasks on display belong to the quest the journal has selected, so that is where
+    -- they are filed. Without a selection they are still worth keeping: they are what the
+    -- screen is showing, whatever it is showing it for.
+    local selected = nil
+    for _, q in ipairs(quests) do
+        if q.selected then selected = q.title break end
+    end
+    if selected == nil and quests[1] ~= nil then selected = quests[1].title end
+
+    M.book = { quests = quests, tasks = tasks or {}, title = selected, at = t }
+    local nav = _G.Nav
+    if nav ~= nil then nav.questBook = M.book end
+    _P("[pad] journal: " .. #quests .. " quests, " .. #(tasks or {}) .. " tasks, on '" ..
+       tostring(selected) .. "'")
+    return M.book
+end
+
+--- What the journal is showing about a quest, if this title is the one it has open.
+function M.bookQuest(title)
+    if M.book == nil or title == nil then return nil end
+    for _, q in ipairs(M.book.quests) do
+        if q.title == title then return q end
+    end
+    return nil
+end
+
+--- The task still to do, in the order the game lists them.
+function M.questTask(q)
+    if M.book == nil then return nil end
+    -- The tasks belong to whichever quest is selected, so they are only its own to speak.
+    if q ~= nil and M.book.title ~= nil and q.title ~= M.book.title then return nil end
+    local best = nil
+    for _, o in ipairs(M.book.tasks or {}) do
+        if not o.done and (best == nil or o.priority < best.priority) then best = o end
+    end
+    return best and best.text or nil
+end
+
+-- Radial menus ----------------------------------------------------------------------
+--
+-- Two of them, and the pad opens both: a bumper raises `ActionRadials` (the hotbar as three
+-- pages of a wheel, the bumpers turning the pages) and a trigger raises `shortcutsMenu` (the
+-- character sheet, the spellbook, resting, the camp, waypoints, quicksave and quickload).
+-- Neither can be read the way a list is.
+--
+--   ls.UIWidget ActionRadials
+--     Grid MainHotbarListHolder > ListBox HotBarList
+--       ListBoxItem            one per page; the one with the focus is the page in play
+--         ls.PagedList > Canvas > ls.PageView > Grid radialRoot
+--           ls.Radial HotBarRadial   SelectedIndex, -1 while the stick is centred
+--             Canvas PART_ContentHolder
+--               ls.LSRadialListItem  one per slot; its DataContext is the action -
+--                                    Name (a loca handle), IconName, MainCost, SpellType…
+--     StackPanel ActionButton        the panel describing whatever is pointed at
+--
+--   ls.UIWidget shortcutsMenu
+--     ls.Radial MenuRadial       SelectedIndex, and the pointed item carries IsSelected
+--       ls.LSRadialListItem ShortCutCharacterSheet / LongRestItem / WaypointsItem / …
+--     StackPanel shortCutInfo    ActionTitle, Description, ExtraInfo
+--     StackPanel SaveLoadErrors  SaveError, LoadError - why saving is refused right now
+--
+-- What makes them readable at all is that `SelectedIndex` is the stick: it is 0-based, it
+-- matches the item marked IsSelected (measured: selIdx=11 against the twelfth item), and it
+-- returns to -1 the moment the stick is let go. So the announcement follows the index, and
+-- the resting state says nothing rather than repeating itself.
+
+M.RADIAL_WIDGETS = { ActionRadials = "Круговое меню", shortcutsMenu = "Быстрое меню" }
+
+-- The action economy, as the model spells it.
+local RADIAL_COST = {
+    Action = "действие", BonusAction = "бонусное действие",
+    Movement = "движение", ReactionActionPoint = "реакция",
+}
+
+--- The wheel the stick is turning.
+---
+--- `ActionRadials` holds one per page and only the focused page answers to the stick, so the
+--- page is decided by the focus of the ListBoxItem around it - overwritten at each one rather
+--- than inherited, because IsKeyboardFocusWithin is set along the whole path from the root
+--- and would otherwise make every page look current.
+local function findRadial(node)
+    local best, bestPage, page, pages = nil, nil, 0, 0
+    local function rec(o, depth, current)
+        if o == nil or depth > 16 then return end
+        local p = props(o)
+        if p.IsVisible == false then return end
+        local cls = select(1, A.splitToString(A.realType(o)))
+        if cls:find("Radial", 1, true) and not cls:find("RadialListItem", 1, true) then
+            pages = pages + 1
+            if best == nil or (current and bestPage ~= true) then
+                best, bestPage, page = o, current, pages
+            end
+            return                      -- never descend into the slots from here
+        end
+        if cls:find("ListBoxItem", 1, true) or cls:find("PageView", 1, true) then
+            current = (p.IsKeyboardFocusWithin == true) or (p.IsFocused == true)
+        end
+        local ch, cn = A.kids(o)
+        for i = 1, cn do rec(ch[i], depth + 1, current) end
+    end
+    rec(node, 0, false)
+    return best, page, pages
+end
+M.findRadial = findRadial
+
+--- The slots of a wheel, in order.
+local function radialItems(radial)
+    local holder = nil
+    local function find(o, d)
+        if o == nil or holder ~= nil or d > 5 then return end
+        local p = props(o)
+        if str(p.Name) == "PART_ContentHolder" then holder = o return end
+        local ch, cn = A.kids(o)
+        for i = 1, cn do find(ch[i], d + 1) end
+    end
+    find(radial, 0)
+    if holder == nil then return {} end
+
+    local out = {}
+    local ch, cn = A.kids(holder)
+    for i = 1, cn do
+        local cls = select(1, A.splitToString(A.realType(ch[i])))
+        if cls:find("RadialListItem", 1, true) then out[#out + 1] = ch[i] end
+    end
+    return out
+end
+M.radialItems = radialItems
+
+--- What one slot is, from the model behind it.
+---
+--- The name is a localisation handle on the item's own data context - the visual slot is an
+--- icon and nothing else, exactly like a save row.
+local function radialSlot(item)
+    if item == nil then return nil end
+    local p = props(item)
+    local rec = nil
+    local dc = p.DataContext
+    if type(dc) == "userdata" then
+        local dp = soft(function() return dc:GetAllProperties() end)
+        if type(dp) == "table" then rec = dp end
+    end
+    if rec == nil then return nil end
+
+    local name = loca(rec.Name)
+    if type(name) ~= "string" or name == "" or name:find("^h%x") then name = nil end
+    local parts = {}
+    if name ~= nil then parts[#parts + 1] = name end
+    local cost = RADIAL_COST[str(rec.MainCost)]
+    if cost ~= nil then parts[#parts + 1] = cost end
+    if type(rec.Count) == "number" and rec.Count > 1 then
+        parts[#parts + 1] = rec.Count .. " шт."
+    end
+    if #parts == 0 then return nil end
+    return table.concat(parts, ", "), rec
+end
+M.radialSlot = radialSlot
+
+--- The panel beside the wheel: the name of what is pointed at, its description, and why it
+--- cannot be used. `shortcutsMenu` names these; `ActionRadials` calls its own ActionButton.
+local RADIAL_INFO = { shortCutInfo = "info", ActionTitle = "title", Description = "desc",
+                      ExtraInfo = "extra", SaveLoadErrors = "errors",
+                      ActionButtonDescription = "desc", RadialActionErrorMessage = "error",
+                      AdditionalErrors = "errors", UpcastInfo = "extra" }
+
+local function radialInfo(widget)
+    local out = {}
+    local function rec(o, depth)
+        if o == nil or depth > 8 or #out > 6 then return end
+        local p = props(o)
+        if p.IsVisible == false then return end
+        local key = RADIAL_INFO[str(p.Name)]
+        if key ~= nil then
+            for _, s in ipairs(A.collectText(o, 60, 6)) do
+                if out[#out] ~= s then out[#out + 1] = s end
+            end
+            return
+        end
+        local cls = select(1, A.splitToString(A.realType(o)))
+        if cls:find("Radial", 1, true) and not cls:find("RadialListItem", 1, true) then return end
+        local ch, cn = A.kids(o)
+        for i = 1, cn do rec(ch[i], depth + 1) end
+    end
+    rec(widget, 0)
+    return out
+end
+M.radialInfo = radialInfo
+
+--- Where the stick points, and on what.
+function M.radialState(widget)
+    local radial, page, pages = findRadial(widget)
+    if radial == nil then return nil end
+    local p = props(radial)
+    local idx = tonumber(p.SelectedIndex)
+    local items = radialItems(radial)
+    local st = { page = page, pages = pages, count = #items,
+                 index = (idx ~= nil and idx >= 0) and (idx + 1) or nil }
+    if st.index ~= nil and items[st.index] ~= nil then
+        st.text, st.rec = radialSlot(items[st.index])
+    end
+    -- The panel is the other half of the answer, and for the shortcut wheel it is the only
+    -- one: its slots carry no record, only a name like ShortCutCharacterSheet.
+    st.info = radialInfo(widget)
+    if st.text == nil and st.info[1] ~= nil then st.text = st.info[1] end
+    return st
+end
+
+M.radialKey = nil
+
+--- Say the wheel as it turns: the page when it changes, the slot when the stick moves.
+function M.radialTick(ws)
+    local widget, name = nil, nil
+    for i = #ws, 1, -1 do
+        local w = ws[i]
+        if w.visible ~= false and M.RADIAL_WIDGETS[str(w.name)] then
+            widget, name = w.node, str(w.name)
+            break
+        end
+    end
+    if widget == nil then
+        if M.radialKey ~= nil then
+            M.radialKey = nil
+            -- Coming back out of a wheel, whatever is underneath has to name itself again.
+            M.lastFocus, M.saveKey, M.lastScreen = nil, nil, nil
+        end
+        return false
+    end
+
+    local st = M.radialState(widget)
+    if st == nil then return true end
+    M.lines, M.linesFrom = st.info, "screen"
+
+    local pageKey = name .. "|" .. tostring(st.page) .. "|" .. tostring(st.count)
+    if pageKey ~= M.radialPage then
+        M.radialPage = pageKey
+        local parts = { M.RADIAL_WIDGETS[name] }
+        if st.pages ~= nil and st.pages > 1 then
+            parts[#parts + 1] = "страница " .. tostring(st.page) .. " из " .. st.pages
+        end
+        if st.count > 0 then parts[#parts + 1] = M.plural(st.count, "пункт") end
+        pend(table.concat(parts, ", "))
+    end
+
+    -- Nothing under the stick: the wheel is at rest and has already said where it is.
+    local key = pageKey .. "|" .. tostring(st.index) .. "|" .. tostring(st.text)
+    if st.index == nil or st.text == nil then
+        M.radialKey = key
+        flush()
+        return true
+    end
+    if key ~= M.radialKey then
+        M.radialKey = key
+        local line = st.text
+        if st.count > 1 then line = line .. ", " .. st.index .. " из " .. st.count end
+        _P("[pad] radial -> " .. line)
+        pend(line)
+    end
+    flush()
+    return true
+end
+
+-- The slot under the d-pad ------------------------------------------------------------
+--
+-- A panel now announces itself and can be read end to end, and that is still not looting. The
+-- player opens a rucksack, hears "Контейнер, 12 строк", moves the d-pad - and nothing. What is
+-- missing is not the text, which was all spoken on opening; it is **which** of it the game has
+-- highlighted now.
+--
+-- There is no Noesis focus to follow in a controller panel, so the selection lives on the slot
+-- itself. The dialogue answer list above shows the shape the game uses for exactly this:
+-- `ls.LSListBoxItem IsSelected=true` among siblings that are all false. The wheel shows the
+-- other shape, `SelectedIndex` on the control. Both are looked for, because the panel is not
+-- required to pick the same one, and which answered is written to the log so the next panel
+-- costs no guessing.
+--
+-- Cost is the reason this is on a timer rather than on every pass: the walk is the same one
+-- that measured 12 ms over the container's 138 nodes, and a d-pad press does not need
+-- answering sixty times a second.
+M.SLOT_FLAGS = { "IsSelected", "IsCurrent", "IsHighlighted", "IsActive" }
+M.SLOT_MS = 120
+M.slotKey = nil
+M.slotPanel = nil
+M.slotAt = 0
+M.slotState = nil
+M.slotItems = nil       -- what the open container holds, from the ECS
+M.slotItemsAt = nil
+
+--- What was in the container a moment ago and is not now, by name.
+---
+--- Taking something is the one event in looting that makes a sound and no words: the game
+--- plays a clink, the item is gone from the panel, and a player who cannot see the inventory
+--- has no way to know what they just picked up. Compared by name rather than by entity,
+--- because a stack that shrinks is the same entity with a different count.
+local function itemGone(was, now)
+    if was == nil or now == nil or was.items == nil or now.items == nil then return nil end
+    local have = {}
+    for i = 1, #now.items do
+        local n = now.items[i].name
+        if n ~= nil then have[n] = (have[n] or 0) + 1 end
+    end
+    for i = 1, #was.items do
+        local n = was.items[i].name
+        if n ~= nil then
+            if (have[n] or 0) > 0 then have[n] = have[n] - 1 else return n end
+        end
+    end
+    return nil
+end
+M.itemGone = itemGone
+
+--- The selected slot inside a panel: which one, out of how many, and what it says.
+---
+--- Down the focus chain, not across the tree. Searching the panel for a marked slot was the
+--- first attempt and it cannot work here: the container's tree carries **3037** nodes claiming
+--- a selection-shaped property, and any budget that survives a frame runs out among the
+--- chrome, hundreds of nodes above the items. The chain is twenty-two levels long and costs
+--- one child scan each.
+---
+--- The last link is a node with `IsFocused` and no text of its own, so the name is looked for
+--- by climbing back up: the nearest ancestor that says anything is the slot. And the position
+--- is taken from the widest level on the chain - among two hundred nodes of layout, the one
+--- with eleven siblings is the row of items, and its index is the one that moves.
+function M.slotFind(node)
+    local chain, cur, guard = {}, node, 0
+    while cur ~= nil and guard < 40 do
+        guard = guard + 1
+        local ch, cn = A.kids(cur)
+        local nxt, ni, done = nil, nil, false
+        for i = 1, cn do
+            local p = props(ch[i])
+            if type(p) == "table" then
+                if p.IsFocused == true then nxt, ni, done = ch[i], i, true break end
+                if nxt == nil and p.IsKeyboardFocusWithin == true then nxt, ni = ch[i], i end
+            end
+        end
+        if nxt == nil then break end
+        chain[#chain + 1] = { node = nxt, index = ni, count = cn }
+        if done then break end
+        cur = nxt
+    end
+    if #chain == 0 then return nil end
+
+    -- The deepest level with more than one sibling, not the widest one. Measured on an opened
+    -- pouch: the chain runs 1/2 2/6 1/4 1/6 1/2 2/4 1/2 1/1 3/11 … 1/1 1/3, and pressing the
+    -- d-pad moved only the **last** of those - 1/3, 2/3, 3/3. The eleven-sibling level nine
+    -- deep never moved at all; it is layout. So the widest level was exactly the wrong pick.
+    local sig, pos = {}, nil
+    for i = 1, #chain do
+        sig[#sig + 1] = chain[i].index .. "/" .. chain[i].count
+    end
+    for i = #chain, 1, -1 do
+        if chain[i].count > 1 then pos = chain[i] break end
+    end
+    pos = pos or chain[#chain]
+
+    -- Climbing back up for the words, and stopping at the first level that has any.
+    --
+    -- Up to the widest level and no further. That level is the row of items - eleven siblings
+    -- among two hundred nodes of layout - so its subtree is the slot and nothing but; one step
+    -- above it is the whole panel, and reading the panel back on every d-pad press is exactly
+    -- what the review keys already do better.
+    --
+    -- The budget is the second argument, the *node* count, and the first attempt passed ten -
+    -- which is less than a slot is made of, so the search came back empty from a subtree that
+    -- had the name in it all along.
+    local texts, from = nil, 1
+    for i = 1, #chain do if chain[i] == pos then from = i break end end
+    for i = #chain, from, -1 do
+        local info = visibleScan(chain[i].node, 400, 8)
+        if info ~= nil and #info.texts > 0 then texts = info.texts break end
+    end
+    texts = texts or {}
+
+    -- A slot is an icon, a stack count and a name, in no dependable order. The longest string
+    -- is the one being listened for; the numbers ride behind it.
+    local text = nil
+    for i = 1, #texts do
+        if text == nil or #texts[i] > #text then text = texts[i] end
+    end
+    return { sig = table.concat(sig, " "), index = pos.index, count = pos.count,
+             texts = texts, text = text, depth = #chain, how = "focus" }
+end
+
+--- Say the slot as the d-pad moves it.
+function M.slotTick(ws)
+    local panel = nil
+    for i = #ws, 1, -1 do
+        local w = ws[i]
+        if w.visible ~= false and M.PANEL_NAMES[str(w.name)] then panel = w break end
+    end
+    if panel == nil then
+        if M.slotPanel ~= nil then
+            -- Out of the panel and back to the world: whatever is underneath has to name
+            -- itself again, the same way it does on leaving a wheel.
+            M.slotPanel, M.slotKey, M.slotState = nil, nil, nil
+            M.lastFocus, M.lastScreen = nil, nil
+        end
+        return false
+    end
+
+    local t = now()
+    if (t - M.slotAt) < M.SLOT_MS then return false end
+    M.slotAt = t
+
+    local pname = str(panel.name)
+    local st = soft(function() return M.slotFind(panel.node) end)
+    M.slotState = st
+    if st == nil then return false end
+    local first = (M.slotPanel ~= pname)
+
+    -- The contents come first, and before the "has anything changed" test, because taking an
+    -- item is a change the widget need not show at all: the clink plays, the panel keeps the
+    -- same shape, and the only evidence is that the container is one item lighter.
+    --
+    -- The name is not in the panel either - the slot is an icon over a stack count - so both
+    -- the announcement and this comparison come from Nav.openContainer.
+    local nav, took = _G.Nav, nil
+    if nav ~= nil and nav.openContainer ~= nil and
+       (first or M.slotItemsAt == nil or (t - M.slotItemsAt) > 400) then
+        local was = M.slotItems
+        M.slotItems = soft(function() return nav.openContainer() end)
+        M.slotItemsAt = t
+        if not first then took = itemGone(was, M.slotItems) end
+    end
+
+    -- The whole chain, not just the slot's own index: a panel can move the selection at any
+    -- level of it - a column, a tab, a row - and every one of those is a move the player made
+    -- and must hear about.
+    local key = pname .. "|" .. st.sig .. "|" .. tostring(st.text)
+    if key == M.slotKey and took == nil then return false end
+    M.slotPanel, M.slotKey = pname, key
+
+    local label = nil
+    local c = M.slotItems
+    if c ~= nil and c.items ~= nil and c.items[st.index] ~= nil then
+        label = c.items[st.index].name
+    end
+    -- A slot past the end of the contents is an empty square, and saying so keeps the d-pad
+    -- audible: silence at the edge of a grid is indistinguishable from a layer that stopped.
+    label = label or st.text or "пусто"
+
+    _P("[pad] slot " .. st.sig .. " -> " .. tostring(label) ..
+       " (ecs " .. tostring(c and #c.items or "-") .. ")" ..
+       (took and (" took=" .. took) or ""))
+
+    -- Taken is said whatever else happened, including on the pass that opened the panel: it is
+    -- the one thing here the player cannot find out any other way.
+    if took ~= nil then pend("Взято: " .. took) end
+    -- The pass that opens the panel says the panel, not the slot: the title and the line count
+    -- are what the player needs first, and the selection has not moved yet. Recorded silently
+    -- so the first press of the d-pad is heard as a change.
+    if not first and label ~= nil then
+        local line = label
+        if st.count > 1 then line = line .. ", " .. st.index .. " из " .. st.count end
+        pend(line)
+    end
+    return flush()
 end
 
 -- Dialogue -------------------------------------------------------------------------
@@ -1525,32 +2860,6 @@ end
 --- the Expander a few levels up, in the ToString tail rather than in any Text property.
 --- Without this the focus lands on a control that announces its own class name, which is
 --- the whole of what the screen used to say.
---- The playthrough's name, which is on a descendant named Title.
----
---- Not the Expander's own ToString: that reads "Expander: ListBox", and not the first text
---- under it either, for the same reason - a text walk from the group header reaches the
---- template's own words before it reaches the save's. The template names the element that
---- holds the caption, so ask for it by name.
-local function titleUnder(node)
-    local found = nil
-    local function rec(o, d)
-        if o == nil or found ~= nil or d > 7 then return end
-        local p = props(o)
-        if str(p.Name) == "Title" then
-            -- The caption is the whole of ToString here, not its tail: a node rendering a
-            -- name has no class prefix at all ("Лаэзель", not "TextBlock: Лаэзель"), so
-            -- splitToString hands it back as the class and the label comes out nil.
-            local rt = A.realType(o)
-            found = A.firstText(p.Text, select(2, A.splitToString(rt)), rt)
-            if found ~= nil then return end
-        end
-        local ch, cn = A.kids(o)
-        for i = 1, cn do rec(ch[i], d + 1) end
-    end
-    rec(node, 0)
-    return found
-end
-
 local function expanderText(o, p)
     for i = #M.focusPath, 1, -1 do
         local q = M.focusPath[i]
@@ -1559,6 +2868,17 @@ local function expanderText(o, p)
             local qp = props(q)
             local name = titleUnder(q) or "Прохождение"
             local state = (qp.IsExpanded == true) and "развёрнуто" or "свёрнуто"
+
+            -- The journal is built from the same control, and a quest announced as "группа
+            -- сохранений" is worse than no wording at all. Here the useful second half is
+            -- not what kind of thing this is but what it is asking for.
+            local quest = M.bookQuest(name)
+            if quest ~= nil then
+                local parts = { name, state }
+                local task = M.questTask(quest)
+                if task ~= nil then parts[#parts + 1] = task end
+                return table.concat(parts, ", ")
+            end
 
             -- Position among the groups. The expanders are siblings inside the list's
             -- panel, one ContentPresenter each, so counting them is a single level.
@@ -1837,11 +3157,25 @@ local function readerTick()
     -- 2 из 2, назад, 1 м" between two rows of the character sheet.
     local nav = _G.Nav
     if nav ~= nil and not M.screenUp then
-        soft(function() nav.targetTick() end)
+        -- Did the walk the layer ordered actually get anywhere: arrival, or a stop short of
+        -- it. Silence after "иду" is the same to a listener as a layer that has died.
+        soft(function() nav.walkTick() end)
+        -- And whether "стоп" was obeyed: an order to stand still that queued behind a walk is
+        -- indistinguishable, from the inside, from one that worked.
+        soft(function() nav.stopTick() end)
+        -- The world list, kept true as the player walks through it rather than as of the last
+        -- key they pressed. Silent: it rebuilds, it never speaks.
+        if M.ticks % 15 == 0 then soft(function() nav.scanTick() end) end
+        local saidTarget = soft(function() return nav.targetTick() end)
         -- What the game writes under the world cursor, for the same reason: the player is
         -- aiming in order to hear where the aim landed, and the game has already worked out
         -- the verb, the distance and whether the move is even possible.
-        soft(function() nav.cursorTick() end)
+        --
+        -- But never in the same breath as the target. Stepping the d-pad through a fight
+        -- rewrites both, and the cursor's version - "Урон:, Атака основной рукой, Недостаточно
+        -- движения" - arrived second and overwrote the one that names who is being aimed at.
+        -- The speech bridge carries one line per tick (E6), so second means instead of.
+        if not saidTarget then soft(function() nav.cursorTick() end) end
         if M.ticks % 30 == 0 then
             soft(function() nav.combatTick() end)
             -- One objective finishing and the next appearing is the one thing in a quest a
@@ -1871,6 +3205,69 @@ local function readerTick()
         end
     end
 
+    -- Saving, when it happens without a screen: F5 and the autosaves. Said behind whatever is
+    -- being spoken rather than over it - it is news, not an answer to anything the player just
+    -- asked - and only the finish is announced when a start was seen, so a panel that is
+    -- already down when the layer starts says nothing.
+    local saving = savingNow(ws)
+    if saving ~= nil and saving ~= M.saving then
+        if saving then
+            M.saving = true
+            say("Сохранение", false)
+        elseif M.saving == true then
+            M.saving = false
+            say("Сохранено", false)
+        end
+    end
+
+    -- A confirmation box takes the pass whole. It is the one thing on screen that must be
+    -- heard before anything else - answering "удалить сохранение?" costs one button - and
+    -- neither the focus search below nor M.active would ever reach it: the box holds no
+    -- focus and the screen under it keeps one.
+    local box = soft(function() return M.messageBox(ws) end)
+    if box ~= nil then
+        if box.key ~= M.modalKey then
+            M.modalKey = box.key
+            M.lines, M.cursor, M.linesFrom = box.lines, 0, "screen"
+            _P("[pad] message box: " .. table.concat(box.lines, ". "))
+            say(table.concat(box.lines, ". "))
+        end
+        throttle(micros() - t0)
+        return
+    end
+    if M.modalKey ~= nil then
+        -- The box is gone. Where the player stands has not been said since it went up, and
+        -- after an answer to a question about deleting something it is the first thing they
+        -- need: forget what was last announced so this pass says it again.
+        M.modalKey = nil
+        M.saveKey, M.saveGroupKey, M.lastFocus, M.lastScreen = nil, nil, nil, nil
+    end
+
+    -- A wheel takes the pass for the same reason a box does: the stick moves a selection that
+    -- lives in the control's own SelectedIndex, and the focus - which sits on the page, not
+    -- on the slot - has nothing to say about it.
+    if soft(function() return M.radialTick(ws) end) then
+        throttle(micros() - t0)
+        return
+    end
+
+    -- A panel takes the pass for the same reason: its selection moves inside a tree that does
+    -- not otherwise change, so nothing below would ever notice.
+    if soft(function() return M.slotTick(ws) end) then
+        throttle(micros() - t0)
+        return
+    end
+
+    -- The journal is remembered while it is open, because it is gone the moment it closes and
+    -- what it holds is the only answer to "where does the story want me" the game gives.
+    for i = #ws, 1, -1 do
+        local w = ws[i]
+        if w.visible ~= false and M.JOURNAL_WIDGETS[str(w.name)] then
+            soft(function() M.journalRefresh(w.node, w.name ~= M.lastScreen) end)
+            break
+        end
+    end
+
     local widget, focused = nil, nil
     for i = #ws, 1, -1 do
         local w = ws[i]
@@ -1886,6 +3283,20 @@ local function readerTick()
     -- a player standing in a field.
     M.screenUp = false
 
+    -- A panel the player opened owns the pass, and owns it before anything is asked about
+    -- focus. Two things had to be true at once for looting to be silent, and this fixes both:
+    -- the panel loses the focus race to whatever badge is above it in the stack, and the
+    -- no-focus branch below returns early on a settled tree - so a container that stayed open
+    -- and unchanged never got another chance to claim the keys. Set here, ahead of both.
+    for i = #ws, 1, -1 do
+        local w = ws[i]
+        if w.visible ~= false and M.PANEL_NAMES[str(w.name)] then
+            widget, focused = nil, nil
+            M.screenUp = true
+            break
+        end
+    end
+
     -- Which screens exist and which are up. Cheap, and it is what says whether anything has
     -- happened at all - without it, a screen that keeps no focus would be scanned in full on
     -- every single tick, which is the cost that took the reader down to 1 Hz.
@@ -1897,6 +3308,22 @@ local function readerTick()
     M.lastWidgetSig = sig
 
     if widget == nil then
+        -- A save screen is read whether or not anything on it holds a focus: its cursor is
+        -- the list's own selection and it moves while the tree stands still, so the settled
+        -- shortcut below would sit on it. Only for screens already known to be one - the
+        -- probe costs two property reads and the answer never changes for a given name.
+        for i = #ws, 1, -1 do
+            local w = ws[i]
+            if w.visible ~= false and M.saveScreens[str(w.name)] == true then
+                if soft(function() return M.saveTick(w.node, nil, str(w.name)) end) then
+                    flush()
+                    throttle(micros() - t0)
+                    return
+                end
+                break
+            end
+        end
+
         -- Nothing focused anywhere: name the screen by its content instead, the only way to
         -- read one that keeps no focus at all (Options_c, LoadGame_c). Once.
         if settled then throttle(micros() - t0) return end
@@ -1930,18 +3357,21 @@ local function readerTick()
 
         if a.name ~= M.lastScreen then
             M.lastScreen, M.lastFocus = a.name, nil
-            M.lines, M.cursor, M.linesFrom = a.texts, 0, "screen"
+            M.lines, M.cursor, M.linesFrom = M.linesOf(a), 0, "screen"
             M.chainMisses = M.chainMisses + 1
             _P("[pad] screen -> " .. tostring(a.name) .. " (" .. a.nodes .. " nodes, " ..
                #a.texts .. " strings, no focus, " .. math.floor(M.cost / 1000) .. " ms)")
             -- No focus to follow here. Say the title, and the once-per-session reminder that
             -- the review cursor is how such a screen gets read at all.
-            if M.hintGiven then
-                say(screenTitle(a) .. ", " .. #a.texts .. " строк")
-            else
+            pend(screenTitle(a) .. ", " .. M.plural(#M.lines, "строка"))
+            if not M.hintGiven then
                 M.hintGiven = true
-                say(screenTitle(a) .. ", " .. #a.texts .. " строк. Обзор — клик левого стика")
+                pend("Обзор — PageUp и PageDown")
             end
+            -- A save screen names where its cursor already is, in the same breath as the
+            -- screen: arriving on it and hearing only "Загрузить игру" is arriving nowhere.
+            soft(function() M.saveTick(a.node, nil, str(a.name)) end)
+            flush()
             -- The screens that keep no focus are exactly the ones whose structure is needed
             -- most, and they never reach the branch below, which is why Options_c went
             -- undumped through a whole pass.
@@ -1958,7 +3388,8 @@ local function readerTick()
         M.tab, M.lastProse = nil, nil
         -- One expensive pass per screen, for the review cursor and the title.
         local info = visibleScan(widget.node, M.nodeCap, 80)
-        M.lines, M.cursor, M.linesFrom = info.texts, 0, "screen"
+        M.lines, M.cursor, M.linesFrom =
+            M.linesOf({ name = widget.name, node = widget.node, texts = info.texts }), 0, "screen"
         -- The same measure the no-focus branch uses to tell a screen from a HUD badge, and
         -- taken here for the same reason: a panel a player has opened is many lines, a badge
         -- that happens to claim focus is a handful. Measured once per screen - it is the
@@ -1970,7 +3401,27 @@ local function readerTick()
         dumpStructure(widget)
     end
     M.screenUp = (M.screenBig == true)
-    throttle(micros() - t0)
+
+    -- A save screen is read from its model before anything else on it is considered. The
+    -- focus here is a step behind the game - with a campaign expanded it stays on the header
+    -- while the cursor is already three saves down the list - so following it would announce
+    -- the wrong place, and the rows it points at carry no text to announce anyway.
+    if M.saveScreens[str(widget.name)] ~= false then
+        local said = soft(function() return M.saveTick(widget.node, focused, str(widget.name)) end)
+        throttle(micros() - t0)
+        if said then flush() return end
+        -- Nothing new about the list. Whether that is the end of it depends on what holds the
+        -- focus: a campaign header is the list and was just read from the model, so falling
+        -- through would only announce it again as "ExpanderButton". Anything else - a
+        -- confirmation box over the screen, the name field of the save dialog - is not part
+        -- of the list at all and is exactly what the ordinary reader is for.
+        if M.saveScreens[str(widget.name)] == true and M.inSaveList(focused) then
+            flush()
+            return
+        end
+    else
+        throttle(micros() - t0)
+    end
 
     -- A row in a list announces itself as caption, value and position. The index comes from
     -- the focused node's own AlternationIndex, so nothing has to be searched for; the length
@@ -2307,6 +3758,10 @@ function M.start()
     M.padStart()
     M.keysStart()
     M.readerStart()
+    -- The world half listens for the server's answers - a destination it refused, above all,
+    -- which the player has to hear rather than infer from a character that did not move.
+    local nav = _G.Nav
+    if nav ~= nil and nav.listen ~= nil then soft(nav.listen) end
     return true
 end
 
