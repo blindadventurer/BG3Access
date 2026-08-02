@@ -23,9 +23,10 @@ that rather than pretending. See [What it does not do](#what-it-does-not-do) bel
 
 - Windows.
 - **Baldur's Gate 3**, Patch 8. Steam and GOG both work.
-- **BG3 Script Extender**, version 32 or newer —
-  <https://github.com/Norbyte/bg3se/releases>. Its installer puts a `DWrite.dll` into the
-  game's `bin` folder; it updates itself from then on. Nothing in this mod runs without it.
+- **BG3 Script Extender** — <https://github.com/Norbyte/bg3se/releases>. Nothing in this mod
+  runs without it, and **the installer offers to fetch it for you**: it names the project, the
+  release and the file, asks once, and Enter is yes. Install it yourself first if you would
+  rather; the installer will find it and leave it alone.
 - **A game controller** — an Xbox pad, or anything Windows recognises as one.
 - **NVDA or JAWS**, running before you start the game. If neither is there, speech falls back
   to SAPI, which will talk but says everything in one flat stream.
@@ -34,21 +35,48 @@ that rather than pretending. See [What it does not do](#what-it-does-not-do) bel
 
 ## Installing
 
+### One line
+
+Press **Windows+R**, paste this, press Enter:
+
+```bash
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/blindadventurer/BG3Access/main/tools/bootstrap.ps1 | iex"
+```
+
+A window opens and does the rest: it downloads the latest release into
+`%LOCALAPPDATA%\Programs\BG3Access`, unpacks it, and runs the installer. There is **one
+question** — whether it may download the Script Extender — and Enter answers it. Nothing else
+is asked.
+
+### Or the ordinary way
+
 1. Download the release ZIP and unpack it anywhere — Downloads is fine. Do not unpack it into
    the game folder.
 2. Run **`install.bat`**.
 3. Read (or listen to) what it prints. It says out loud whether it worked.
 
-That is all of it. The installer finds the game by itself, checks that the Script Extender is
-there, copies the layer in, sets up the piece that turns the game's speech into your screen
-reader's speech, and puts a shortcut on your Desktop that starts the game **without the
+### Either way
+
+The installer finds the game by itself, offers to fetch the Script Extender if it is not
+already there, copies the layer in, sets up the piece that turns the game's speech into your
+screen reader's speech, and puts a shortcut on your Desktop that starts the game **without the
 launcher** — Larian's launcher window has no accessibility information in it at all, and this
 is the simplest way past it. Steam still has to be running for that shortcut to work.
 
-Nothing depends on where you unpacked it. The layer is copied into the game folder, and the
-speech companion is copied into `%LOCALAPPDATA%\BG3Access`, so moving or deleting the unpacked
-folder cannot break either. Keep it anyway: `status.bat` and `uninstall.bat` live there and
-there is no other copy of them.
+Nothing depends on where the unpacked folder is. The layer is copied into the game folder, and
+the speech companion into `%LOCALAPPDATA%\BG3Access`, so moving or deleting the unpacked folder
+cannot break either. Keep it anyway: `status.bat` and `uninstall.bat` live there and there is
+no other copy of them.
+
+Two things that can go wrong once and look permanent:
+
+- **The game folder is read-only.** If the game sits under `Program Files`, the Script Extender
+  cannot be written there by an ordinary program. Right-click `install.bat` and choose **Run as
+  administrator**.
+- **An antivirus removes `DWrite.dll`.** The Script Extender is a DLL that loads itself into the
+  game, which is also what some unpleasant things do, and scanners occasionally take it on that
+  resemblance alone. Allow it and run `install.bat` again. The installer prints the SHA-256 of
+  exactly what it downloaded, so what got quarantined can be identified.
 
 If the game is somewhere the installer cannot find, open a Command Prompt in the unpacked
 folder and give it the path:
@@ -142,8 +170,8 @@ Run **`status.bat`** and send what it prints, at
 
 The most common two:
 
-- **`script extender` says missing.** The game runs, and no mod code runs with it. Install
-  BG3SE and run `install.bat` again.
+- **`script extender` says missing.** The game runs, and no mod code runs with it. Run
+  `install.bat` again and say yes when it offers to fetch it.
 - **`speech companion` says not running.** The game is talking to a file and nothing is
   reading it. Run `install.bat` again; it puts the companion back into Startup and starts it.
 
@@ -161,7 +189,13 @@ the Desktop shortcut, and restores the Script Extender settings file it changed.
 deliberately kept: `explored.json`, the record of where you have already been, so that
 reinstalling later does not start you over.
 
-The Script Extender itself is left alone, on the chance you have other mods using it. To remove
-that too, delete `DWrite.dll` from the game's `bin` folder.
+The Script Extender is left alone, on the chance you have other mods using it — even when the
+installer is the thing that put it there. To take that away as well:
+
+```bash
+uninstall.bat -WithExtender
+```
+
+which removes it only if this installer downloaded it, and says so either way.
 
 Nothing here touches your saves, and nothing replaces a file the game shipped with.

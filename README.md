@@ -10,12 +10,20 @@ mods (Pathfinder: WotR, Rogue Trader).
 
 ## Playing it
 
-Download the latest release, unpack it, run `install.bat`.
+One line, into Windows+R or a PowerShell window, and the rest happens by itself:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/blindadventurer/BG3Access/main/tools/bootstrap.ps1 | iex"
+```
+
+Or download the latest release, unpack it, and run `install.bat` — the same thing with the
+downloading done by hand. Either way the installer offers to fetch the
+**[Script Extender](https://github.com/Norbyte/bg3se/releases)**, without which the game starts
+perfectly and runs no mod code at all.
+
 **[PLAYING.md](PLAYING.md)** is the guide: what you need, the keys, and what to do when it
-is silent. Three things worth knowing before you start — the layer **speaks Russian**, it
-needs a **game controller** plugged in, and it needs the
-**[Script Extender](https://github.com/Norbyte/bg3se/releases)**, without which the game
-starts perfectly and runs no mod code at all.
+is silent. Two things worth knowing before you start — the layer **speaks Russian**, and it
+needs a **game controller** plugged in.
 
 The rest of this file is about the source.
 
@@ -56,6 +64,18 @@ candidate proved by `bin\bg3.exe` rather than by the folder name. `tools/install
 the same graft with the checks a stranger's machine needs around it (is the game there, is
 the Script Extender there, does anything answer when we try to speak) and is what
 `install.bat` runs.
+
+Two of those checks now fix what they find, because for the players this is for a diagnosis is
+not a fix:
+
+- `tools/install-extender.ps1` downloads BG3SE from Norbyte's own releases and puts `DWrite.dll`
+  into `bin`. It asks first, names the project, the release, the file and the hash, and records
+  what it installed so `uninstall.ps1 -WithExtender` can take back exactly that. The file's
+  header argues with the earlier decision not to do this at all; it is worth reading before
+  changing it back.
+- `tools/bootstrap.ps1` is the one-liner above: fetch the current release, unpack it into
+  `%LOCALAPPDATA%\Programs\BG3Access`, run the installer. It is fetched from `main` by URL, so
+  what is on `main` is what strangers run — it is not covered by the release ZIP being pinned.
 
 On a machine that has never run a PowerShell script, `powershell -File ...` fails outright:
 the default execution policy is Restricted. That is what the `.bat` wrappers are for — they

@@ -15,13 +15,16 @@
 # Usage: install.bat                                 from the folder this was unpacked into
 #        powershell -File tools\install.ps1          the same, if scripts are allowed to run
 #        powershell -File tools\install.ps1 -GameDir "D:\Games\Baldurs Gate 3"
-#        powershell -File tools\install.ps1 -NoSpeech -NoShortcut
+#        powershell -File tools\install.ps1 -Yes     ask nothing; assume yes
+#        powershell -File tools\install.ps1 -NoSpeech -NoShortcut -NoExtender
 
 param(
     [string]$GameDir = (& (Join-Path $PSScriptRoot "find-game.ps1")),
     [string]$HostModule = "GustavX",
     [switch]$NoSpeech,          # do not put the speech companion in Startup
     [switch]$NoShortcut,        # do not put a launcher-skipping shortcut on the Desktop
+    [switch]$NoExtender,        # do not offer to download the Script Extender - only check
+    [switch]$Yes,               # answer yes to everything this would otherwise ask
     [switch]$Silent             # print only; do not speak the result
 )
 
@@ -75,20 +78,38 @@ Ok $GameDir
 
 # --- 2. the Script Extender ------------------------------------------------------------------
 #
-# Not installed here on purpose. BG3SE is a DLL that injects itself into the game and updates
-# itself on every launch; fetching and dropping in someone else's binary behind the player's
-# back is not a thing an accessibility mod should teach people to accept. It is checked for
-# instead, loudly, because without it the game starts perfectly and runs no mod code at all -
-# which sounds exactly like the layer being broken.
+# Without it the game starts perfectly and runs no mod code at all, which sounds exactly like
+# the layer being broken - so it is the one prerequisite that has to be dealt with rather than
+# reported. It used to be only reported, and install-extender.ps1 carries the argument for why
+# that was the wrong call for the people this is for. What is kept from it: the download is
+# still asked for, still named out loud, and -NoExtender still gets the old behaviour.
 
 Step "Script Extender"
 $dwrite = Join-Path $GameDir "bin\DWrite.dll"
 if (Test-Path $dwrite) {
     Ok ("bin\DWrite.dll, {0:yyyy-MM-dd}" -f (Get-Item $dwrite).LastWriteTime)
-} else {
+} elseif ($NoExtender) {
     Bad "the Script Extender is not installed - no mod code runs without it"
     Write-Host "     Get it from https://github.com/Norbyte/bg3se/releases"
-    Write-Host "     (the installer puts DWrite.dll into $GameDir\bin)"
+    Write-Host "     (its zip holds one DWrite.dll, and that goes into $GameDir\bin)"
+} else {
+    # -Silent is passed through as itself and not quietly widened into -Yes. "Do not speak" is
+    # a request about the voice; turning it into "download a binary without asking" would be
+    # this script answering a question on the player's behalf that was put to them.
+    $pass = @{}
+    if ($Yes)    { $pass.Yes = $true }
+    if ($Silent) { $pass.Silent = $true }
+    try {
+        & (Join-Path $PSScriptRoot "install-extender.ps1") -GameDir $GameDir @pass
+        $code = $LASTEXITCODE
+    } catch {
+        Bad "the Script Extender install failed: $_"
+        $code = 2
+    }
+    if ($code -ne 0) {
+        Bad "the Script Extender is not installed - no mod code runs without it"
+        Write-Host "     Everything else below was still done. Install it and run install.bat again."
+    }
 }
 
 # --- 3. the Script Extender's own settings ----------------------------------------------------

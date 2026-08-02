@@ -33,7 +33,7 @@ if ($GameDir) {
     $se = Join-Path $GameDir "bin\DWrite.dll"
     Line "script extender" (Test-Path $se) $(if (Test-Path $se) {
         "bin\DWrite.dll, {0:yyyy-MM-dd}" -f (Get-Item $se).LastWriteTime
-    } else { "missing - install BG3SE from github.com/Norbyte/bg3se" })
+    } else { "missing - run install.bat, it offers to fetch it" })
 }
 
 # 1. game
