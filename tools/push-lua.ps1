@@ -69,3 +69,25 @@ foreach ($l in $lines) {
     Write-Host "  > $l"
     Start-Sleep -Milliseconds 400
 }
+
+# The server half is not part of A11yBoot.reload(): BootstrapServer reads a11y-nav-server.lua
+# once, when the session loads, and the client's reload cannot reach across. So a push that
+# touched it left the old copy running - the file on disk was new, the character still would
+# not stop, and nothing said which half was which. It is re-read here, in its own context,
+# exactly the way its own header documents.
+if (-not $NoReload -and (-not $Name -or $Name -eq "a11y-nav-server")) {
+    $serverLines = @(
+        'NavSrv = load(Ext.IO.LoadFile("A11y/a11y-nav-server.lua"))()',
+        'NavSrv.listen()'
+    )
+    & $send -Line "server" | Out-Null
+    Start-Sleep -Milliseconds 300
+    foreach ($l in $serverLines) {
+        & $send -Line $l | Out-Null
+        Write-Host "  server > $l"
+        Start-Sleep -Milliseconds 400
+    }
+    # Left in the client context, because that is where everything else is typed.
+    & $send -Line "client" | Out-Null
+    Start-Sleep -Milliseconds 300
+}
