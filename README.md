@@ -8,6 +8,17 @@ The architecture it implements is written down separately in
 [graph-a11y-spec.md](graph-a11y-spec.md) — engine-neutral, and derived from two shipped
 mods (Pathfinder: WotR, Rogue Trader).
 
+## Playing it
+
+Download the latest release, unpack it, run `install.bat`.
+**[PLAYING.md](PLAYING.md)** is the guide: what you need, the keys, and what to do when it
+is silent. Three things worth knowing before you start — the layer **speaks Russian**, it
+needs a **game controller** plugged in, and it needs the
+**[Script Extender](https://github.com/Norbyte/bg3se/releases)**, without which the game
+starts perfectly and runs no mod code at all.
+
+The rest of this file is about the source.
+
 ## Layout
 
 | Path | What it is |
@@ -17,6 +28,8 @@ mods (Pathfinder: WotR, Rogue Trader).
 | `BG3AccessDiag/` | A separate diagnostic mod (client/server probes) |
 | `probes/` | Console probes run by hand during investigation |
 | `tools/` | PowerShell: build, install, hot-reload, console I/O, speech |
+| `install.bat`, `uninstall.bat`, `status.bat` | What a player runs — wrappers over `tools/install.ps1` and friends |
+| `PLAYING.md` | The player's guide: requirements, keys, troubleshooting |
 | `bg3-host-port-research.md` | How the five host ports map onto BG3's engine |
 | `experiment-results.md` | Running log of what was tried and what it did |
 
@@ -37,8 +50,16 @@ powershell -File tools\build-mod.ps1        # stage lua\ into the mod tree, then
 powershell -File tools\mod-status.ps1       # after restarting the game: did it take?
 ```
 
-Both scripts assume the game at `G:\SteamLibrary\steamapps\common\Baldurs Gate 3`;
-pass `-GameDir` for another install.
+Every script takes `-GameDir`, and defaults it to whatever `tools/find-game.ps1` finds —
+Steam's `libraryfolders.vdf`, then GOG's registry entry, then the usual paths, each
+candidate proved by `bin\bg3.exe` rather than by the folder name. `tools/install.ps1` is
+the same graft with the checks a stranger's machine needs around it (is the game there, is
+the Script Extender there, does anything answer when we try to speak) and is what
+`install.bat` runs.
+
+On a machine that has never run a PowerShell script, `powershell -File ...` fails outright:
+the default execution policy is Restricted. That is what the `.bat` wrappers are for — they
+pass `-ExecutionPolicy Bypass`.
 
 ## Development loop
 

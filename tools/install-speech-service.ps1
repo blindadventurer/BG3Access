@@ -10,17 +10,28 @@
 # No admin rights and no scheduled task: a .vbs in Startup is the one launcher that starts
 # a PowerShell loop with no console window flashing on the screen at every logon.
 #
+# The launcher holds an absolute path to speak.ps1, so the companion is copied somewhere it can
+# keep pointing at. A player unpacks a ZIP into Downloads, installs, plays for a month and then
+# tidies Downloads out - and at the next logon speech is gone with no error anywhere, because
+# the thing that would have reported it is the thing that did not start. The copy lives in
+# %LOCALAPPDATA%\BG3Access, which nothing else has a reason to clean up. -InPlace keeps the old
+# behaviour, pointing at the working copy, which is what a development machine wants.
+#
 # Usage: powershell -File install-speech-service.ps1
+#        powershell -File install-speech-service.ps1 -InPlace
 #        powershell -File install-speech-service.ps1 -Uninstall
 
 param(
-    [switch]$Uninstall
+    [switch]$Uninstall,
+    [switch]$InPlace
 )
 
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$speak   = Join-Path $PSScriptRoot "speak.ps1"
+$srcSpeak = Join-Path $PSScriptRoot "speak.ps1"
+$srcPrism = Join-Path $PSScriptRoot "prism.dll"
+$installed = Join-Path $env:LOCALAPPDATA "BG3Access"
 $startup = [Environment]::GetFolderPath("Startup")
 $vbs     = Join-Path $startup "BG3 Access Speech.vbs"
 $log     = Join-Path $env:LOCALAPPDATA "Larian Studios\Baldur's Gate 3\Script Extender\A11y\speech-companion.log"
@@ -38,12 +49,26 @@ if ($Uninstall) {
     Stop-Companion
     if (Test-Path $vbs) { Remove-Item $vbs -Force; Write-Host "removed $vbs" }
     else { Write-Host "nothing installed at $vbs" }
+    # Only ever written by this script, so it goes whole. The bridge file and the log live
+    # elsewhere, under the Script Extender - uninstall.ps1 deals with those, by name.
+    if (Test-Path $installed) { Remove-Item $installed -Recurse -Force; Write-Host "removed $installed" }
     return
 }
 
-if (-not (Test-Path $speak)) { Write-Error "speak.ps1 not found at $speak" }
-if (-not (Test-Path (Join-Path $PSScriptRoot "prism.dll"))) {
+if (-not (Test-Path $srcSpeak)) { Write-Error "speak.ps1 not found at $srcSpeak" }
+if (-not (Test-Path $srcPrism)) {
     Write-Error "prism.dll not found next to speak.ps1 - the companion would have nothing to speak with"
+}
+
+if ($InPlace) {
+    $speak = $srcSpeak
+} else {
+    # Copied, not linked, and the DLL with it: speak.ps1 loads prism.dll from its own folder.
+    New-Item -ItemType Directory -Force $installed | Out-Null
+    Copy-Item $srcSpeak $installed -Force
+    Copy-Item $srcPrism $installed -Force
+    $speak = Join-Path $installed "speak.ps1"
+    Write-Host "companion copied to $installed"
 }
 
 New-Item -ItemType Directory -Force (Split-Path $log) | Out-Null

@@ -1,0 +1,63 @@
+name: Something is wrong
+description: The layer is silent, says the wrong thing, or will not install.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Three fields, and the third one does most of the work. Nothing here needs you to
+        look at the screen.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Where in the game you were, what you pressed, and what you heard or did not hear.
+      placeholder: |
+        In the camp, pressed Page Down to step through the things around me.
+        It named the first two and then said nothing more.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: false
+
+  - type: textarea
+    id: status
+    attributes:
+      label: The output of status.bat
+      description: >
+        Run status.bat from the folder you unpacked the mod into and paste everything it
+        prints. Six lines. It answers almost every "it is silent" question on its own, and
+        it carries the game and Script Extender versions with it.
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: reader
+    attributes:
+      label: Screen reader
+      options:
+        - NVDA
+        - JAWS
+        - Something else
+        - None - I use the SAPI fallback
+    validations:
+      required: false
+
+  - type: textarea
+    id: transcript
+    attributes:
+      label: Transcript, if you have one
+      description: >
+        For "it read the wrong thing", the exact wording matters. Run
+        `tools\speech-log.ps1` while you reproduce it, and paste the lines around the
+        problem from speech-log.txt.
+      render: text
+    validations:
+      required: false

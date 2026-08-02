@@ -17,7 +17,7 @@
 
 param(
     [string]$Divine,
-    [string]$GameDir = "G:\SteamLibrary\steamapps\common\Baldurs Gate 3",
+    [string]$GameDir = (& (Join-Path $PSScriptRoot "find-game.ps1")),
     [switch]$Pak,
     [switch]$Register,
     [switch]$NoGraft

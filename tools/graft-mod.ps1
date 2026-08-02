@@ -21,8 +21,9 @@
 
 param(
     [string]$HostModule = "GustavX",
-    [string]$GameDir = "G:\SteamLibrary\steamapps\common\Baldurs Gate 3",
-    [switch]$Uninstall
+    [string]$GameDir = (& (Join-Path $PSScriptRoot "find-game.ps1")),
+    [switch]$Uninstall,
+    [switch]$Quiet          # one line instead of the file list - install.ps1 has its own report
 )
 
 $ErrorActionPreference = "Stop"
@@ -35,6 +36,10 @@ $src   = Join-Path $root "BG3Access\Mods\BG3Access\ScriptExtender"
 $luaS  = Join-Path $root "lua"
 $dst   = Join-Path $GameDir "Data\Mods\$HostModule\ScriptExtender"
 
+if ([string]::IsNullOrWhiteSpace($GameDir)) {
+    Write-Error ("Baldur's Gate 3 was not found on this machine - pass -GameDir " +
+                 '"<path to Baldurs Gate 3>" (the folder holding bin\bg3.exe)')
+}
 if (-not (Test-Path $GameDir)) { Write-Error "no game at $GameDir - pass -GameDir" }
 
 if ($Uninstall) {
@@ -60,9 +65,12 @@ Copy-Item (Join-Path $src "Config.json") $dst -Force
 Copy-Item (Join-Path $src "Lua\Bootstrap*.lua") (Join-Path $dst "Lua") -Force
 Copy-Item (Join-Path $luaS "*.lua") (Join-Path $dst "Lua\A11y") -Force
 
-Write-Host "grafted onto ${HostModule}:"
-Get-ChildItem $dst -Recurse -File | ForEach-Object {
-    "    " + $_.FullName.Substring($GameDir.Length + 1)
+$files = Get-ChildItem $dst -Recurse -File
+if ($Quiet) {
+    Write-Host ("   {0} files -> Data\Mods\{1}\ScriptExtender" -f $files.Count, $HostModule)
+} else {
+    Write-Host "grafted onto ${HostModule}:"
+    $files | ForEach-Object { "    " + $_.FullName.Substring($GameDir.Length + 1) }
+    Write-Host ""
+    Write-Host "Restart the game, then run status.bat (or tools\mod-status.ps1)"
 }
-Write-Host ""
-Write-Host "Restart the game, then: powershell -File tools\mod-status.ps1"

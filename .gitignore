@@ -9,6 +9,7 @@ BG3Access/Mods/BG3Access/ScriptExtender/Lua/A11y/
 
 # Build output
 *.pak
+dist/
 
 # Local scratch
 *.log
