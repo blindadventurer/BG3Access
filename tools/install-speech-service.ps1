@@ -45,6 +45,16 @@ function Stop-Companion {
     }
 }
 
+# Stop-Process returns before the process is gone, and the handles it holds outlive it by a
+# moment more - so the copy that follows it can still land on a locked file. Two seconds of
+# retries rather than one attempt, and the last attempt is left to throw with the real message.
+function Copy-WhenFreed($src, $dst) {
+    for ($i = 1; $i -le 10; $i++) {
+        try { Copy-Item $src $dst -Force ; return } catch { Start-Sleep -Milliseconds 200 }
+    }
+    Copy-Item $src $dst -Force
+}
+
 if ($Uninstall) {
     Stop-Companion
     if (Test-Path $vbs) { Remove-Item $vbs -Force; Write-Host "removed $vbs" }
@@ -60,13 +70,22 @@ if (-not (Test-Path $srcPrism)) {
     Write-Error "prism.dll not found next to speak.ps1 - the companion would have nothing to speak with"
 }
 
+# Stopped before anything is copied over it, not after.
+#
+# A running companion has prism.dll loaded, and Windows does not let a loaded DLL be replaced -
+# so on any machine where this had already been installed once, the copy below failed with a
+# sharing violation and the install reported that it could not set speech up at all. Which is
+# every second install, and the exact advice PLAYING.md gives when speech goes quiet: run
+# install.bat again. It never showed up here because a first install has nothing running yet.
+Stop-Companion
+
 if ($InPlace) {
     $speak = $srcSpeak
 } else {
     # Copied, not linked, and the DLL with it: speak.ps1 loads prism.dll from its own folder.
     New-Item -ItemType Directory -Force $installed | Out-Null
-    Copy-Item $srcSpeak $installed -Force
-    Copy-Item $srcPrism $installed -Force
+    Copy-WhenFreed $srcSpeak (Join-Path $installed "speak.ps1")
+    Copy-WhenFreed $srcPrism (Join-Path $installed "prism.dll")
     $speak = Join-Path $installed "speak.ps1"
     Write-Host "companion copied to $installed"
 }
@@ -98,7 +117,7 @@ sh.Run "$vbsCmd", 0, False
 Set-Content -Path $vbs -Value $body -Encoding ASCII
 Write-Host "installed $vbs"
 
-Stop-Companion
+# Already stopped, above, before its files were replaced under it - so this only starts one.
 & wscript.exe $vbs
 Start-Sleep -Milliseconds 1500
 
