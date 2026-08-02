@@ -2424,12 +2424,84 @@ function M.slotFind(node)
              texts = texts, text = text, depth = #chain, how = "focus" }
 end
 
+-- Panels whose slots are read the same way but which must **not** join `PANEL_NAMES`.
+--
+-- The character sheet holds the player's own inventory and the slot reader never looked at it,
+-- so the sheet answered with tab names, the weight and nothing else: 1451 nodes, eight strings,
+-- and every item on it an icon.
+--
+-- A second table rather than an entry in the first, and that is the whole care here.
+-- `PANEL_NAMES` also decides who owns the reader's pass and whether the review keys leave the
+-- world scanner - and unlike a container, the character sheet already claims a Noesis focus of
+-- its own, which is read today and works. Putting it there would trade a reading that works for
+-- one still to be proven.
+M.SLOT_PANELS = { CharacterPanel_c = true }
+
+-- Widgets nobody has taught the layer about yet ------------------------------------
+--
+-- Two whole classes of thing turned out to be unread - the tutorial cards, and the dice rolls
+-- with their results - and they share the shape that makes them hard to chase: each is up for a
+-- moment, in the middle of play, and by the time anyone can ask what the thing was called it is
+-- gone again. Asking the player to reproduce one on demand is asking them to fail a check on
+-- purpose.
+--
+-- So every widget the game raises is written down the first time it is ever seen, with whatever
+-- text it had, into a file that outlives the session. The next roll answers the question by
+-- itself, with nobody watching at the moment it happens.
+
+M.WIDGET_FILE = "A11y/widgets.json"
+M.WIDGET_TRIES = 5          -- how many passes a name gets to produce its words
+
+M.widgetSeen = nil
+
+function M.widgetWatch(ws)
+    if M.widgetSeen == nil then
+        M.widgetSeen = {}
+        local body = soft(function() return Ext.IO.LoadFile(M.WIDGET_FILE) end)
+        if type(body) == "string" and #body > 0 then
+            local t = soft(function() return Ext.Json.Parse(body) end)
+            if type(t) == "table" then M.widgetSeen = t end
+        end
+    end
+
+    local fresh = false
+    for i = 1, #ws do
+        local w = ws[i]
+        if w.visible ~= false then
+            local name = str(w.name)
+            local rec = M.widgetSeen[name]
+            -- A card is often drawn a frame before its words arrive, so an empty first sighting
+            -- is not the answer. It gets a few more passes and then stops costing anything -
+            -- without the cap this would rescan every wordless HUD badge forever.
+            if rec == nil or ((rec.texts == nil or #rec.texts == 0) and
+                              (tonumber(rec.tries) or 0) < M.WIDGET_TRIES) then
+                local info = soft(function() return visibleScan(w.node, 300, 20) end)
+                M.widgetSeen[name] = {
+                    texts = info and info.texts or {},
+                    nodes = info and info.nodes or 0,
+                    tries = ((rec and tonumber(rec.tries)) or 0) + 1,
+                }
+                fresh = true
+            end
+        end
+    end
+
+    if fresh then
+        local body = soft(function()
+            return Ext.Json.Stringify(M.widgetSeen, { Beautify = true, MaxDepth = 6 })
+        end)
+        if body ~= nil then soft(function() Ext.IO.SaveFile(M.WIDGET_FILE, body) end) end
+    end
+    return fresh
+end
+
 --- Say the slot as the d-pad moves it.
 function M.slotTick(ws)
     local panel = nil
     for i = #ws, 1, -1 do
         local w = ws[i]
-        if w.visible ~= false and M.PANEL_NAMES[str(w.name)] then panel = w break end
+        local n = str(w.name)
+        if w.visible ~= false and (M.PANEL_NAMES[n] or M.SLOT_PANELS[n]) then panel = w break end
     end
     if panel == nil then
         if M.slotPanel ~= nil then
@@ -2458,10 +2530,14 @@ function M.slotTick(ws)
     -- The name is not in the panel either - the slot is an icon over a stack count - so both
     -- the announcement and this comparison come from Nav.openContainer.
     local nav, took = _G.Nav, nil
-    if nav ~= nil and nav.openContainer ~= nil and
-       (first or M.slotItemsAt == nil or (t - M.slotItemsAt) > 400) then
+    if nav ~= nil and (first or M.slotItemsAt == nil or (t - M.slotItemsAt) > 400) then
         local was = M.slotItems
-        M.slotItems = soft(function() return nav.openContainer() end)
+        M.slotItems = soft(function()
+            -- Whose list this is. See SLOT_PANELS: the sheet is about the character, and asking
+            -- the world for the nearest open container while a sheet is up answers with a crate.
+            if M.SLOT_PANELS[pname] then return nav.myInventory() end
+            return nav.openContainer()
+        end)
         M.slotItemsAt = t
         if not first then took = itemGone(was, M.slotItems) end
     end
@@ -2476,15 +2552,51 @@ function M.slotTick(ws)
     local label = nil
     local c = M.slotItems
     if c ~= nil and c.items ~= nil and c.items[st.index] ~= nil then
-        label = c.items[st.index].name
+        -- The index is a position in a grid; the list is what the ECS holds. On a container
+        -- panel those line up, because the panel *is* the container. On the character sheet the
+        -- grid is one of several - tabs, equipment, filters, the camp stash - so the join is
+        -- trusted only when the row is exactly as long as the inventory.
+        --
+        -- Naming the wrong item is worse than naming none. The player cannot see the mistake and
+        -- will act on it, and a layer that is confidently wrong is the one failure this whole
+        -- thing exists to remove.
+        if not M.SLOT_PANELS[pname] or st.count == #c.items then
+            label = c.items[st.index].name
+        end
     end
     -- A slot past the end of the contents is an empty square, and saying so keeps the d-pad
     -- audible: silence at the edge of a grid is indistinguishable from a layer that stopped.
     label = label or st.text or "пусто"
 
-    _P("[pad] slot " .. st.sig .. " -> " .. tostring(label) ..
-       " (ecs " .. tostring(c and #c.items or "-") .. ")" ..
-       (took and (" took=" .. took) or ""))
+    -- Kept for calibration, not for the player. Whether the widget's slot index really lines up
+    -- with the order the ECS hands the inventory back in is a claim about a grid nobody here can
+    -- see, and it has to be checked against what the game highlights rather than assumed. The
+    -- console is ANSI, so the names cannot be printed - they are read out of this instead.
+    M.slotLast = { panel = pname, sig = st.sig, index = st.index, count = st.count,
+                   label = label, widget = st.text, ecs = c and #c.items or nil,
+                   names = (function()
+                       if c == nil or c.items == nil then return nil end
+                       local n = {}
+                       for i = 1, #c.items do n[i] = c.items[i].name end
+                       return n
+                   end)() }
+    -- And a short history of them. Calibrating the join means comparing a *sequence* of d-pad
+    -- presses against what the game highlighted, and reading one value per round trip would cost
+    -- the player a press and a wait for each. Twelve is enough to see whether the index walks.
+    --
+    -- The **whole chain**, not the level this pass happened to pick. The first calibration
+    -- recorded only the chosen level and answered nothing: the rows came back 4, 47, 2 and 19
+    -- long while the player walked a ten-item inventory, which proves the pick is wrong and says
+    -- nothing about which level is right. With every level written down, the one that steps 1, 2,
+    -- 3 as the d-pad moves is visible in a single sitting instead of one guess per round trip.
+    M.slotSeen = M.slotSeen or {}
+    M.slotSeen[#M.slotSeen + 1] = { i = st.index, n = st.count, label = label,
+                                    widget = st.text, panel = pname, sig = st.sig }
+    while #M.slotSeen > 12 do table.remove(M.slotSeen, 1) end
+
+    _P("[pad] slot " .. st.sig .. " [" .. tostring(st.index) .. "/" .. tostring(st.count) ..
+       "] (ecs " .. tostring(c and #c.items or "-") .. ")" ..
+       (took and " took" or ""))
 
     -- Taken is said whatever else happened, including on the pass that opened the panel: it is
     -- the one thing here the player cannot find out any other way.
@@ -3306,6 +3418,10 @@ local function readerTick()
     end
     local settled = (sig == M.lastWidgetSig)
     M.lastWidgetSig = sig
+
+    -- Only when the set of widgets changed, which is exactly when a card, a roll or a panel has
+    -- appeared. On a settled tree this costs nothing at all.
+    if not settled then soft(function() M.widgetWatch(ws) end) end
 
     if widget == nil then
         -- A save screen is read whether or not anything on it holds a focus: its cursor is

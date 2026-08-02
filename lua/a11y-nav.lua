@@ -100,11 +100,26 @@ end
 --- everything. The engine's own list is the only honest source. Asked for one entity at a
 --- time, at the moment a claim is about to be made about it - never in the scan loop, where it
 --- would be two hundred lookups a pass.
+---
+--- **Both spellings go in, and that is a bug fix, not thoroughness.** The engine lists a
+--- component as `eoc::item_template::UseActionComponent`; everything that indexes an entity
+--- spells it `UseAction`. The set was built from the first and read with the second, so not one
+--- lookup in it ever matched - `canInteract` answered false for every object in the world, and
+--- "действие — кнопка A" was a line the layer could not reach. Measured at the pod on the
+--- nautiloid: one metre away, carrying UseAction, and canInteract said no.
 local function compSet(e)
     local names = soft(function() return e:GetAllComponentNames() end)
     if type(names) ~= "table" then return nil end
     local set = {}
-    for i = 1, #names do set[tostring(names[i])] = true end
+    for i = 1, #names do
+        local full = tostring(names[i])
+        set[full] = true
+        local tail = full:match("([^:]+)$")
+        if tail ~= nil then
+            local short = tail:gsub("Component$", "")
+            if short ~= "" then set[short] = true end
+        end
+    end
     return set
 end
 M.compSet = compSet
@@ -114,9 +129,15 @@ M.compSet = compSet
 -- still called an arrival, and those are exactly the cases where the action is not offered.
 M.INTERACT_M = 2.0
 
--- What makes a thing usable. `CanInteract` is the general one; the rest are the specific
--- answers - a container can be searched, a door opened, a creature spoken to.
-local INTERACT_COMPONENTS = { "CanInteract", "InteractionFilter", "CanBeLooted",
+-- What makes a thing usable.
+--
+-- `UseAction` leads because it is what measurement says: on the nautiloid every object a player
+-- actually works with - the pod, the console, the sphincter doors, the reliquary, the brain
+-- jars - carries it, and `CanInteract` was on **creatures only** (Lae'zel, Shadowheart, the
+-- sacrificed thralls) and on nothing else at all. A category built on `CanInteract` therefore
+-- contained no objects, and the pod the player was looking for sat in "предметы" between eight
+-- salted tubers.
+local INTERACT_COMPONENTS = { "UseAction", "CanInteract", "InteractionFilter", "CanBeLooted",
                               "InventoryContainer", "IsDoor", "Door", "CanSpeak" }
 
 --- Is there really something to press A for.
@@ -127,27 +148,165 @@ local INTERACT_COMPONENTS = { "CanInteract", "InteractionFilter", "CanBeLooted",
 function M.canInteract(e, dist)
     if e == nil then return false end
     if dist ~= nil and dist > M.INTERACT_M then return false end
+    -- Marked as an object, and marked as not to be touched. Shadowheart's cradle is one: it
+    -- carries UseAction like the pod beside it and `InteractionDisabled` on top, and it stands
+    -- nearer to her than the thing that actually opens it. Offering it is worse than silence -
+    -- it is the layer sending a blind player to press A at the one object in the room that
+    -- cannot answer.
+    if has(e, "InteractionDisabled") then return false end
     local set = compSet(e)
     -- No list to read means the entity does not answer that question, not that it is dead
     -- scenery. `CanInteract` by name is one of the readings that measured sanely - 41 of 133,
     -- not 133 of 133 - so it is the fallback rather than a flat no.
-    if set == nil then return has(e, "CanInteract") end
+    if set == nil then return has(e, "UseAction") or has(e, "CanInteract") end
     for i = 1, #INTERACT_COMPONENTS do
         if set[INTERACT_COMPONENTS[i]] then return true end
     end
     return false
 end
 
+-- What the game says pressing A would do, in the words a player would use.
+--
+-- `UseAction.UseActions[n].Type` is the game's own verb. These four are what the nautiloid
+-- produced; anything else falls back to "использовать", which is true of every use action there
+-- is and so cannot mislead.
+local USE_VERBS = {
+    Door      = "дверь",
+    OpenClose = "открыть",
+    StoryUse  = "использовать",
+    Throw     = "бросить",
+}
+
+--- The verb for a thing, or nil if it takes no action at all.
+function M.useVerb(e)
+    if e == nil then return nil end
+    if has(e, "InteractionDisabled") then return nil end
+    local acts = soft(function() return e.UseAction.UseActions end)
+    if acts == nil then return nil end
+    local n = tonumber(soft(function() return #acts end)) or 0
+    for i = 1, n do
+        local t = soft(function() return tostring(acts[i].Type) end)
+        if t ~= nil then
+            local word = USE_VERBS[t]
+            if word ~= nil then return word end
+            return "использовать"
+        end
+    end
+    return nil
+end
+
+-- Locks, and the keys that answer them ----------------------------------------------
+--
+-- The engine says all of this plainly and the layer was not asking. `Lock.Key_M` is the id of
+-- the key a thing wants, `Lock.LockDC` is whether a pick is allowed at all (-1 means never),
+-- and an item's `Key.Key` is the id it answers to. Between them they turn "заперто" - a dead
+-- end for someone who cannot walk over and look - into "заперто, ключ у Лаэзель".
+--
+-- Measured on the nautiloid: one lock in the level (Замысловатый реликварий, `Key_M`
+-- TUT_SharChest, DC -1) and one key (Золотой ключ, `Key` TUT_SharChest) - and the key sat in
+-- Lae'zel's keychain while the player steered Astarion and searched his own pack for it.
+
+M.keyIndex = nil
+M.keyIndexAt = nil
+M.KEY_INDEX_MS = 5000
+
+--- Whose pack a thing is in, out through every bag it is nested in.
+---
+--- One level is not enough and that is the whole point of the loop: BG3 files a key into a
+--- keychain and the keychain into a character, so the honest answer is two hops away and the
+--- obvious one hop answers "Брелок", which tells the player nothing.
+function M.holderOf(e)
+    local at = e
+    for _ = 1, 6 do
+        local inv = soft(function() return at.InventoryMember.Inventory end)
+        if inv == nil then return nil end
+        local owner = soft(function() return inv.InventoryIsOwned.Owner end)
+        if owner == nil then return nil end
+        if soft(function() return owner.ClientCharacter end) ~= nil or
+           soft(function() return owner.PartyMember end) ~= nil then
+            return nameOf(owner)
+        end
+        at = owner
+    end
+    return nil
+end
+
+--- Who is carrying which key, by the id a lock names.
+---
+--- Swept from the level rather than from a pack: "do I have the key" is a question about the
+--- party, not about whichever character the player happens to be steering.
+function M.keysKnown()
+    local now = soft(Ext.Utils.MonotonicTime) or 0
+    if M.keyIndex ~= nil and (now - (M.keyIndexAt or 0)) < M.KEY_INDEX_MS then
+        return M.keyIndex
+    end
+    local out = {}
+    local list = soft(Ext.Entity.GetAllEntitiesWithComponent, "Key")
+    if type(list) == "table" then
+        for i = 1, #list do
+            local e = list[i]
+            local id = soft(function() return tostring(e.Key.Key) end)
+            if type(id) == "string" and id ~= "" then
+                out[id] = { name = nameOf(e), holder = M.holderOf(e) }
+            end
+        end
+    end
+    M.keyIndex, M.keyIndexAt = out, now
+    return out
+end
+
+--- Why this thing will not simply open, in one phrase, or nil if it will.
+function M.lockPhrase(e)
+    if e == nil then return nil end
+    local lock = soft(function() return e.Lock end)
+    if lock == nil then return nil end
+    local id = soft(function() return tostring(lock.Key_M) end)
+    local dc = tonumber(soft(function() return lock.LockDC end))
+
+    local bits = { "заперто" }
+    if type(id) == "string" and id ~= "" then
+        local k = M.keysKnown()[id]
+        if k == nil then
+            bits[#bits + 1] = "ключа нет"
+        elseif k.holder ~= nil then
+            bits[#bits + 1] = "ключ у " .. k.holder
+        else
+            bits[#bits + 1] = "ключ рядом"
+        end
+    end
+    -- A negative DC is the engine saying the lock takes no pick at all, which is a different
+    -- answer from a hard one and saves the player the attempt and the broken tools.
+    if dc ~= nil and dc >= 0 then bits[#bits + 1] = "отмычка " .. dc
+    elseif dc ~= nil then bits[#bits + 1] = "отмычкой не открыть" end
+    return table.concat(bits, ", ")
+end
+
 --- Rough category, for sorting and for saying what a thing is.
+---
+--- Returns the word, a rank, and whether the thing belongs in "взаимодействие" at all. The
+--- third value used to be inferred from the word, which is why a cradle marked
+--- `InteractionDisabled` was offered as somewhere to go.
 local function kindOf(e)
     if has(e, "ClientCharacter") or has(e, "Character") then
-        if has(e, "PartyMember") then return "спутник", 1 end
-        return "существо", 2
+        -- A body is not a creature and the difference is the whole of what the player does
+        -- next: you talk to one and you search the other. The rune that opens Shadowheart's pod
+        -- is on a corpse the list called "существо", indistinguishable from the companion
+        -- standing beside it.
+        local hp = soft(function() return e.Health.Hp end)
+        if type(hp) == "number" and hp <= 0 then return "труп", 2, true end
+        if has(e, "PartyMember") then return "спутник", 1, true end
+        return "существо", 2, true
     end
-    if has(e, "IsDoor") then return "дверь", 3 end
-    if has(e, "InventoryContainer") then return "контейнер", 4 end
-    if has(e, "CanInteract") then return "объект", 5 end
-    return nil, 9
+    local off = has(e, "InteractionDisabled")
+    if has(e, "IsDoor") then return "дверь", 3, not off end
+    if has(e, "InventoryContainer") then return "контейнер", 4, not off end
+    -- The verb the game itself offers, which is where this used to read `CanInteract` - a
+    -- creature component that never fires for an object, so "взаимодействие" held doors and
+    -- chests and nothing else, and every console, lever and pod landed in "предметы".
+    local verb = M.useVerb(e)
+    if verb ~= nil then return verb, 5, true end
+    if has(e, "CanInteract") then return "объект", 5, not off end
+    return nil, 9, false
 end
 M.kindOf = kindOf
 
@@ -173,9 +332,17 @@ M.SCAN_RADIUS = 300
 M.LIVE_MS = 700
 M.OBJ_MS = 2000
 
--- What the near categories can be widened to, in metres. The first is the default: what is
--- within twenty metres is what is around you; the rest are for looking for somewhere to go.
-M.RADII = { 20, 50, 100, 200 }
+-- What the near categories can be widened to, in metres. Twenty is the default: what is within
+-- twenty metres is what is around you; the rest are for looking for somewhere to go.
+--
+-- Ten is at the bottom because a room is not twenty metres. Standing at the pod the twenty-metre
+-- list ran to forty-four entries, of which eight were salted tubers and four were cradles in the
+-- next bay - and the two things that mattered were both inside three metres.
+--
+-- Three hundred is the top because that is `SCAN_RADIUS`, the sweep itself. A step past it would
+-- widen the filter over a list that does not go that far, so the count would stop changing and
+-- the key would read as broken.
+M.RADII = { 10, 20, 50, 100, 200, 300 }
 
 --- Twelve directions relative to where the character looks, because a clock face is the one
 --- bearing scheme that needs no explaining.
@@ -241,7 +408,7 @@ function M.scan(radius, quiet)
             if dist <= radius and dist > 0.3 then
                 local name = nameOf(e)
                 if name ~= nil then
-                    local kind, rank = kindOf(e)
+                    local kind, rank, usable = kindOf(e)
                     local dir = bearing(dx, dz, yaw)
                     local looted = nil
                     if opened[tostring(e)] then
@@ -251,7 +418,19 @@ function M.scan(radius, quiet)
                         looted = (items ~= nil and #items == 0) or nil
                     end
                     out[#out + 1] = { entity = e, name = name, kind = kind, rank = rank,
-                                      dist = dist, dir = dir, pos = p, looted = looted }
+                                      dist = dist, dir = dir, pos = p, looted = looted,
+                                      usable = usable,
+                                      -- Never opened, so what is inside is unknown rather than
+                                      -- absent. The list used to make these look exactly like a
+                                      -- container already emptied, and that is how a corpse
+                                      -- holding the rune gets walked past.
+                                      --
+                                      -- Chests and bodies only. `CanBeLooted` is on the living
+                                      -- too, and the first run of this announced Shadowheart as
+                                      -- unsearched about two seconds after she was freed.
+                                      unopened = (kind == "контейнер" or kind == "труп" or
+                                                  (kind == nil and has(e, "CanBeLooted")))
+                                                 and not opened[tostring(e)] or nil }
                 end
             end
         end
@@ -393,9 +572,15 @@ local function matches(key, it)
     -- find nothing there at all.
     if it.looted and key ~= "all" then return false end
     if key == "all" then return true end
+    -- The living only. A corpse answers a different question - it is somewhere to search, and
+    -- that is what "взаимодействие" is for; leaving it here made "существа" the count of who is
+    -- in the room plus everyone who used to be.
     if key == "beings" then return it.kind == "существо" or it.kind == "спутник" end
     if key == "usable" then
-        return it.kind == "дверь" or it.kind == "контейнер" or it.kind == "объект"
+        -- Asked of the entity when the list was built, not guessed back from the word: the
+        -- words are now the game's own verbs and there are more of them than this test could
+        -- ever enumerate.
+        return it.usable == true and it.kind ~= "спутник" and it.kind ~= "существо"
     end
     if key == "things" then return it.kind == nil end
     if key == "landmarks" then
@@ -768,7 +953,12 @@ end
 local function describe(it)
     local parts = { it.name }
     if it.kind then parts[#parts + 1] = it.kind end
-    if it.looted then parts[#parts + 1] = "пусто" end
+    if it.looted then parts[#parts + 1] = "пусто"
+    elseif it.unopened then parts[#parts + 1] = "не обыскано" end
+    -- Why pressing A will not be enough. Said in the list rather than only on arrival, because
+    -- the decision it changes - walk over there at all, and with whom - is taken from the list.
+    local lock = M.lockPhrase(it.entity)
+    if lock ~= nil then parts[#parts + 1] = lock end
     if it.anchor ~= nil and it.dir then parts[#parts + 1] = it.dir end
     parts[#parts + 1] = string.format("%.0f м", it.dist)
     return table.concat(parts, ", ")
@@ -931,6 +1121,25 @@ local function contentsOf(e)
     return out
 end
 M.contentsOf = contentsOf
+
+--- What the character the player is steering is carrying.
+---
+--- The same shape `openContainer` returns, because it feeds the same consumer: the panel reader
+--- joins a slot index to a list of names. The *source* has to differ because the question does.
+--- A container panel is about the thing in front of the character; the character sheet is about
+--- the character - and `openContainer` deliberately hunts for the nearest thing in the **world**
+--- with an inventory, which at an open character sheet is whatever crate happens to be standing
+--- behind you.
+---
+--- Top level only, on purpose. A bag in the pack is one entry on the panel too; opening it opens
+--- its own panel, and that panel is a container like any other.
+function M.myInventory()
+    local me = M.me()
+    if me == nil then return nil end
+    local items = contentsOf(me)
+    if items == nil then return nil end
+    return { entity = me, name = nameOf(me), dist = 0, items = items }
+end
 
 --- The container the player has open, with what is in it, in slot order.
 ---
@@ -1253,7 +1462,13 @@ function M.walkTick()
             -- which is the fact the player needs to decide whether to walk the rest.
             local bits = { "Пришли: " .. tostring(w.name) }
             if M.canInteract(e, d) then
-                bits[#bits + 1] = "действие — кнопка A"
+                -- The game's own verb where it has one. "действие — кнопка A" was the layer
+                -- admitting it did not know what the button would do; "использовать — кнопка A"
+                -- is what the object itself says.
+                local verb = M.useVerb(e)
+                bits[#bits + 1] = (verb or "действие") .. " — кнопка A"
+                local lock = M.lockPhrase(e)
+                if lock ~= nil then bits[#bits + 1] = lock end
             else
                 bits[#bits + 1] = string.format("%.0f м", d)
             end

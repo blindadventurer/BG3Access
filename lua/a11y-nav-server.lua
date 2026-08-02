@@ -31,9 +31,6 @@ M.last = nil
 
 --- Walk the controlled character to a point.
 ---
---- "Walk" rather than "Run" on purpose: a blind player is navigating by ear and by the
---- object list, and arriving slowly is easier to correct than overshooting.
----
 --- **The point is validated first, and this is not a nicety.** `CharacterMoveToPosition` does
 --- not refuse a position that is not standable - it puts the character there, which off a
 --- beach means in the sea, and the player drowned finding that out. `Osi.FindValidPosition`
@@ -82,6 +79,15 @@ end
 
 --- Walk to another entity, which is better than walking to its coordinates: the engine
 --- stops at interaction range instead of trying to stand inside it.
+---
+--- **Run, not Walk.** The original reasoning for walking was that arriving slowly is easier to
+--- correct than overshooting - which is true and turned out not to matter, because the layer
+--- does not overshoot: the engine stops the order at interaction range by itself, and the stop
+--- key clears the queue outright. What the player actually met was a fifty-metre errand taken
+--- at walking pace, in silence, with nothing to do but wait it out. Speed is still a parameter,
+--- so a caller that wants the careful pace can still ask for it.
+M.SPEED = "Run"
+
 function M.moveToObject(uuid, speed)
     local host = soft(Osi.GetHostCharacter)
     if host == nil then return false, "no host character" end
@@ -90,7 +96,7 @@ function M.moveToObject(uuid, speed)
     -- times - it books three journeys, and the character sets off on all of them in turn,
     -- which from the outside is a character running its own route and ignoring the layer.
     M.clearQueue(host)
-    local r = try(function() Osi.CharacterMoveTo(host, uuid, speed or "Walk", "") end)
+    local r = try(function() Osi.CharacterMoveTo(host, uuid, speed or M.SPEED, "") end)
     _P("[nav-srv] move to object " .. tostring(uuid) .. " ok=" .. tostring(r.ok) ..
        " err=" .. tostring(r.error))
     return r.ok, r.error
