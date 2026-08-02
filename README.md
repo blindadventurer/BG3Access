@@ -10,7 +10,10 @@ mods (Pathfinder: WotR, Rogue Trader).
 
 ## Playing it
 
-One line, into Windows+R or a PowerShell window, and the rest happens by itself:
+Download
+**[BG3Access-Setup.exe](https://github.com/blindadventurer/BG3Access/releases/latest/download/BG3Access-Setup.exe)**,
+double-click it, answer Yes once. It is not signed, so SmartScreen asks for *More info* →
+*Run anyway* first — the line below avoids that dialog and does the same thing:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/blindadventurer/BG3Access/main/tools/bootstrap.ps1 | iex"
@@ -35,7 +38,7 @@ The rest of this file is about the source.
 | `BG3Access/` | Mod tree: `meta.lsx`, `Config.json`, `BootstrapClient/Server.lua` |
 | `BG3AccessDiag/` | A separate diagnostic mod (client/server probes) |
 | `probes/` | Console probes run by hand during investigation |
-| `tools/` | PowerShell: build, install, hot-reload, console I/O, speech |
+| `tools/` | PowerShell: build, package, install, hot-reload, console I/O, speech |
 | `install.bat`, `uninstall.bat`, `status.bat` | What a player runs — wrappers over `tools/install.ps1` and friends |
 | `PLAYING.md` | The player's guide: requirements, keys, troubleshooting |
 | `bg3-host-port-research.md` | How the five host ports map onto BG3's engine |
@@ -76,6 +79,11 @@ not a fix:
 - `tools/bootstrap.ps1` is the one-liner above: fetch the current release, unpack it into
   `%LOCALAPPDATA%\Programs\BG3Access`, run the installer. It is fetched from `main` by URL, so
   what is on `main` is what strangers run — it is not covered by the release ZIP being pinned.
+- `tools/package-installer.ps1` builds `BG3Access-Setup.exe` out of the release ZIP and
+  `tools/sfx-setup.bat`, using IExpress, which is already on every Windows. Its header records
+  the three ways an IExpress package silently installs nothing; all three were found by
+  building one. The asset name carries no version on purpose, so
+  `/releases/latest/download/BG3Access-Setup.exe` is a link that keeps working.
 
 On a machine that has never run a PowerShell script, `powershell -File ...` fails outright:
 the default execution policy is Restricted. That is what the `.bat` wrappers are for — they

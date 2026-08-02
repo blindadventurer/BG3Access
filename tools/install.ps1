@@ -273,3 +273,8 @@ if ($problems.Count -eq 0) {
          $(if ($problems.Count -eq 1) { "" } else { "s" }) + " need attention. See the window.")
 }
 foreach ($n in $notes) { Write-Host "Note: $n" }
+
+# Said in an exit code as well as in words, because one caller cannot read the words: the
+# window inside BG3Access-Setup.exe closes itself when this succeeds and waits when it does
+# not, and "did it work" has to be answerable without parsing what was printed.
+if ($problems.Count) { exit 1 }

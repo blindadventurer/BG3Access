@@ -35,7 +35,19 @@ that rather than pretending. See [What it does not do](#what-it-does-not-do) bel
 
 ## Installing
 
-### One line
+### Download one file and click it
+
+**[BG3Access-Setup.exe](https://github.com/blindadventurer/BG3Access/releases/latest/download/BG3Access-Setup.exe)**
+— download it, double-click it, answer **Yes** to the one question it asks, and wait about half
+a minute. It says out loud when it is done, and the window closes itself.
+
+Windows will get in the way once, because the file is not signed by anyone it recognises. You
+get **"Windows protected your PC"**, and the only button showing is *Don't run*. The one you
+want is behind the **More info** link: click that, then **Run anyway**. It is one dialog, it
+happens once, and the two ways below avoid it entirely — but nothing in the mod can remove it
+short of a code-signing certificate, which costs money it does not have.
+
+### Or one line, with no warning to click through
 
 Press **Windows+R**, paste this, press Enter:
 
@@ -55,7 +67,7 @@ is asked.
 2. Run **`install.bat`**.
 3. Read (or listen to) what it prints. It says out loud whether it worked.
 
-### Either way
+### All three do the same thing
 
 The installer finds the game by itself, offers to fetch the Script Extender if it is not
 already there, copies the layer in, sets up the piece that turns the game's speech into your
@@ -63,10 +75,13 @@ screen reader's speech, and puts a shortcut on your Desktop that starts the game
 launcher** — Larian's launcher window has no accessibility information in it at all, and this
 is the simplest way past it. Steam still has to be running for that shortcut to work.
 
+The only difference is who asks about the Script Extender: the ZIP and the one-liner ask in the
+window, `BG3Access-Setup.exe` asks in its opening dialog and then does not stop again.
+
 Nothing depends on where the unpacked folder is. The layer is copied into the game folder, and
 the speech companion into `%LOCALAPPDATA%\BG3Access`, so moving or deleting the unpacked folder
-cannot break either. Keep it anyway: `status.bat` and `uninstall.bat` live there and there is
-no other copy of them.
+cannot break either. Keep it anyway: `status.bat` and `uninstall.bat` live there — the exe and
+the one-liner put them in `%LOCALAPPDATA%\Programs\BG3Access` — and there is no other copy.
 
 Two things that can go wrong once and look permanent:
 
