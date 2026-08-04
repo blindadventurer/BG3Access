@@ -76,6 +76,35 @@ if ([string]::IsNullOrWhiteSpace($GameDir) -or -not (Test-Path $GameDir)) {
 }
 Ok $GameDir
 
+# Can this account change the game folder at all?
+#
+# Every step below writes into it, and on Steam's default library - under Program Files - an
+# ordinary user cannot. That is where most people's copy is; the only copy this was developed
+# against sits on a second drive, which is why it took until now to look.
+#
+# Asked once, here, rather than discovered three steps down inside whichever write happens to
+# come first. Measured: with the Script Extender already present, step 2 skips its own writability
+# check and the first thing to fail is the settings file - an UnauthorizedAccessException with a
+# path in it, no remedy, and $ErrorActionPreference = Stop taking the whole install with it. The
+# remedy is one right-click, and guessing that from a .NET exception is not something to ask of
+# somebody who cannot see it.
+$modsDir = Join-Path $GameDir "Data\Mods"
+try {
+    New-Item -ItemType Directory -Force $modsDir | Out-Null
+    $probe = Join-Path $modsDir ".bg3access-write-test"
+    [System.IO.File]::WriteAllText($probe, "")
+    Remove-Item $probe -Force
+} catch {
+    Bad "this account cannot write into $GameDir"
+    Write-Host ""
+    Write-Host "   The game is in a folder Windows will not let you change - usually because"
+    Write-Host "   it is under Program Files. Right-click install.bat, choose"
+    Write-Host "   Run as administrator, and run it again. Nothing was changed."
+    Say ("Baldur's Gate 3 is in a folder this account cannot change. Right-click install dot bat " +
+         "and choose Run as administrator.")
+    exit 1
+}
+
 # --- 2. the Script Extender ------------------------------------------------------------------
 #
 # Without it the game starts perfectly and runs no mod code at all, which sounds exactly like
@@ -149,8 +178,14 @@ if (Test-Path $seSettings) {
         Bad "could not read $seSettings - leave it alone and check it by hand"
     }
 } else {
-    Write-Json $seSettings "{`r`n    `"DeveloperMode`": true,`r`n    `"CreateConsole`": false`r`n}`r`n"
-    Ok "written: bin\ScriptExtenderSettings.json"
+    # Guarded even though the folder was proved writable above: bin\ can carry its own ACL, and
+    # an install that dies here would die with the layer already grafted and speech uninstalled.
+    try {
+        Write-Json $seSettings "{`r`n    `"DeveloperMode`": true,`r`n    `"CreateConsole`": false`r`n}`r`n"
+        Ok "written: bin\ScriptExtenderSettings.json"
+    } catch {
+        Bad "could not write $seSettings - set DeveloperMode there by hand"
+    }
 }
 
 # --- 4. the layer itself -----------------------------------------------------------------------
@@ -171,9 +206,31 @@ if (-not (Test-Path $hostPak)) {
 try {
     & (Join-Path $PSScriptRoot "graft-mod.ps1") -GameDir $GameDir -HostModule $HostModule -Quiet
 } catch {
+    # $_ carries graft-mod's own message, which for the one failure worth naming - a game folder
+    # this account cannot write to - already says to run as administrator.
     Bad "the install failed: $_"
     Say "The install failed. Nothing is running."
     exit 1
+}
+
+# --- 4b. the thing the layer reads through -------------------------------------------------
+#
+# BG3 only raises its controller interface when it sees a pad, and that interface is what the
+# layer reads. No pad means an install where every line above says OK and the game says nothing -
+# indistinguishable, from the inside, from the mod being broken.
+#
+# This used to be handled by telling everybody to plug one in, checked or nothing. A miss is
+# still not called a failure: the detector is honest about not being able to see every pad (see
+# find-controller.ps1), so it goes in the notes and into the sentence spoken at the end, and
+# never into $problems - a false miss must not turn a good install into a reported failure.
+Step "Controller"
+$pad = $null
+try { $pad = @(& (Join-Path $PSScriptRoot "find-controller.ps1")) } catch { }
+if ($pad) {
+    Ok $pad[0]
+} else {
+    Ok "none found"
+    $notes += "no game controller was found - the layer has nothing to read without one"
 }
 
 # --- 5. the half that cannot live inside the game ------------------------------------------------
@@ -275,16 +332,31 @@ Write-Host "".PadRight(60, "-")
 if ($problems.Count -eq 0) {
     Write-Host "Installed."
     Write-Host ""
-    Write-Host "Next:"
-    Write-Host "  1. Plug in a game controller. The layer reads the game's controller"
-    Write-Host "     interface, and without a pad there is nothing for it to read."
     # ASCII only in this file: PS 5.1 reads a .ps1 with no BOM as ANSI, and the line the layer
     # actually speaks here is Russian - written out, it would print as mojibake.
-    Write-Host "  2. Start the game. The layer says one short line out loud when it comes up."
-    Write-Host "  3. If it stays silent, run status.bat and send what it prints."
+    Write-Host "Next:"
+    $n = 1
+    if (-not $pad) {
+        Write-Host "  $n. Plug in a game controller. The layer reads the game's controller"
+        Write-Host "     interface, and without a pad there is nothing for it to read."
+        $n++
+    }
+    Write-Host "  $n. Start the game from the Desktop shortcut, not from Steam. It puts the"
+    Write-Host "     speech companion back if it has stopped, and nothing else checks."
+    $n++
+    Write-Host "  $n. The layer says one short line out loud when it comes up."
+    $n++
+    Write-Host "  $n. If it stays silent, run status.bat and send what it prints."
     Write-Host ""
     Write-Host "The keys are in PLAYING.md."
-    Say "BG3 access installed. Plug in a controller and start the game."
+    # Said differently depending on what was found, because "plug in a controller" to somebody
+    # who already has one is noise, and noise is what a spoken summary can least afford.
+    if ($pad) {
+        Say "BG3 access installed. Start the game from the Desktop shortcut."
+    } else {
+        Say ("BG3 access installed, but no game controller was found. Plug one in before you " +
+             "start the game, or the layer will have nothing to read.")
+    }
 } else {
     Write-Host "Installed, but not ready:"
     foreach ($p in $problems) { Write-Host "  - $p" }

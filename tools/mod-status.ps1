@@ -1,8 +1,11 @@
 # Is the layer actually up? Answered without the game window and without the SE console.
 #
-# Four things have to be true and each fails silently on its own: the layer is grafted onto a
-# loaded module, the client bootstrap ran, the game is running it, and something is turning
-# the speech bridge into speech. Each line below is one of them.
+# Everything here fails silently on its own: the game has to be found and carry the Script
+# Extender, a pad has to be plugged in for BG3 to raise the interface the layer reads, the
+# layer has to be grafted onto a loaded module, the client bootstrap has to have run, and
+# something has to be turning the speech bridge into speech. One line each, and the failing
+# one names its own fix - this page is what a player is asked for when it has gone quiet, so
+# a line that only says "no" is half an answer.
 #
 # Usage: powershell -File mod-status.ps1
 
@@ -35,6 +38,15 @@ if ($GameDir) {
         "bin\DWrite.dll, {0:yyyy-MM-dd}" -f (Get-Item $se).LastWriteTime
     } else { "missing - run install.bat, it offers to fetch it" })
 }
+
+# 0b. the pad. Not the layer's doing either, and the one prerequisite that fails while
+#     everything else on this page says OK: BG3 raises its controller interface only when it
+#     sees a pad, and that interface is the whole of what the layer reads. "It installed fine
+#     and the game says nothing" is this line, most of the time.
+$pad = $null
+try { $pad = @(& (Join-Path $PSScriptRoot "find-controller.ps1")) } catch { }
+Line "controller" ([bool]$pad) $(if ($pad) { $pad[0] } else {
+    "none found - plug one in; without it the layer has nothing to read" })
 
 # 1. game
 $game = Get-Process bg3_dx11, bg3 -ErrorAction SilentlyContinue

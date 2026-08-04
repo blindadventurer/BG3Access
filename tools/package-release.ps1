@@ -43,6 +43,7 @@ $FILES = @(
     # The tools an install needs, and the two a bug report needs. Not push-lua, not the
     # console bridges, not the drive scripts: those talk to a game being developed against.
     "tools\find-game.ps1",
+    "tools\find-controller.ps1",
     "tools\install.ps1",
     "tools\install-extender.ps1",
     "tools\uninstall.ps1",

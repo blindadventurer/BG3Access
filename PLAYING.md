@@ -113,8 +113,9 @@ That is the folder that contains `bin\bg3.exe`.
 Start the game, plug in the controller, and wait for the main menu. When the layer comes up it
 says one short line. From there the pad moves through the menu and the layer reads it.
 
-If nothing is spoken, run **`status.bat`**. It prints six lines, one for each thing that can be
-wrong on its own, and the failing one names its own fix.
+If nothing is spoken, run **`status.bat`**. It prints one line for each thing that can be wrong
+on its own — including whether it can see a controller at all — and the failing one names its
+own fix.
 
 ## The keys
 
@@ -186,11 +187,15 @@ category instead.
 ## If something is wrong
 
 Run **`status.bat`** and send what it prints, at
-<https://github.com/blindadventurer/BG3Access/issues>. Those six lines answer almost every
+<https://github.com/blindadventurer/BG3Access/issues>. Those lines answer almost every
 "it is silent" question before anyone has to ask you anything.
 
-The most common two:
+The most common three:
 
+- **`controller` says none found.** BG3 raises the interface the layer reads only when it sees a
+  pad, so without one everything else can be perfect and the game will still say nothing. Plug
+  one in and start the game again. If you have a controller connected and this still says none
+  found, say so in the issue — the check does not recognise every pad, and that is worth fixing.
 - **`script extender` says missing.** The game runs, and no mod code runs with it. Run
   `install.bat` again and say yes when it offers to fetch it.
 - **`speech companion` says not running.** The game is talking to a file and nothing is

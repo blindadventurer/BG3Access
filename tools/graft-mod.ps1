@@ -60,6 +60,28 @@ if ($Uninstall) {
 
 if (-not (Test-Path $src)) { Write-Error "no mod tree at $src - run build-mod.ps1 first" }
 
+# Can this account write into the game at all? Asked before anything is created.
+#
+# Steam's default library is under Program Files, which an ordinary user cannot write to, and
+# that is where most people's copy of the game is - not on a second drive, which is where the
+# only copy this was ever developed against lives. Without this the first thing to fail is the
+# New-Item below, with an UnauthorizedAccessException that names a path and no remedy; the
+# remedy is one right-click, and it takes somebody who can see the error to guess that.
+#
+# install-extender.ps1 makes exactly this check against bin\ before spending five megabytes on
+# a download it could not have saved. The layer's own files are smaller and the reasoning is
+# the same: find out now, and say the useful sentence.
+$mods = Join-Path $GameDir "Data\Mods"
+try {
+    New-Item -ItemType Directory -Force $mods | Out-Null
+    $probe = Join-Path $mods ".bg3access-write-test"
+    [System.IO.File]::WriteAllText($probe, "")
+    Remove-Item $probe -Force
+} catch {
+    Write-Error ("cannot write into $mods - this account may not change the game folder. " +
+                 "Right-click install.bat and choose Run as administrator.")
+}
+
 New-Item -ItemType Directory -Force (Join-Path $dst "Lua\A11y") | Out-Null
 Copy-Item (Join-Path $src "Config.json") $dst -Force
 Copy-Item (Join-Path $src "Lua\Bootstrap*.lua") (Join-Path $dst "Lua") -Force
