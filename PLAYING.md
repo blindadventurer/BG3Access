@@ -143,7 +143,8 @@ there. On a panel it reads the summary — on a character sheet, what all the ch
 up to.
 
 **Delete** — how far the scanner looks. Press it to widen or narrow the circle around you.
-On a panel it reads the details of the selected thing.
+On a panel it reads the details of the selected thing: on the settings screen, the name of
+the setting and the game's whole explanation of it.
 
 **Alt + Delete** — walk to the target the game itself has selected. In a fight that is a
 different thing from the scanner's selection, which is why it has its own key.
@@ -166,6 +167,10 @@ category instead.
 ## What it reads
 
 - The main menu, and character creation.
+- The settings screen: which section you are in, the setting, its value, how far down the
+  list you are — and the game's own explanation of what the setting does, which it shows for
+  whichever one the cursor is on. That last part is read with the setting. Move on and it is
+  cut off mid-sentence, which is the point; **Delete** reads it again from the start.
 - Conversations: who is speaking, the line, and the answers as you move between them.
 - The world around you, by category and by distance, and walking to any of it with progress
   reported on the way.

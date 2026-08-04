@@ -616,6 +616,11 @@ M.SCREEN_TITLES = {
     Container_c = "Контейнер",
     Trade_c = "Обмен",
     Loot_c = "Добыча",
+    -- The options screen has no title text either, and its first string is the name of the
+    -- first tab - which the tab strip is about to announce in its own right. So arriving
+    -- there said "Игра. Игра." and never the word the player pressed to get there.
+    Options_c = "Параметры",
+    Options = "Параметры",
 }
 
 local function screenTitle(a)
@@ -1115,10 +1120,28 @@ M.listInfo = listInfo
 --           ListBoxItem raceTab IsSelected=true
 --       Control summaryPanel                  the character sheet
 --       ls.LSButton ToggleTooltips            "Подсказки (вкл)"
+--
+-- The options screen turns out to be built the same way, and nobody noticed for weeks: it
+-- keeps a panel that explains whichever setting the cursor is on, and the layer read caption,
+-- value and position off the row and stopped there. So "Кармические кубики, Вкл., флажок" was
+-- announced and the sentence that says what karmic dice *are* was on the screen, unread.
+--
+--   ls.UIWidget Options_c
+--     ListBox HeaderCarouselList            the tabs
+--     ItemsControl Options                  the 33 rows - and 1050 of the screen's 1284 nodes
+--     Grid PreviewScroll
+--       StackPanel PreviewHolder
+--         Run PreviewName                   the setting's own name, said already
+--         TextBlock                         the paragraph, unnamed and unmarked
+--
+-- Which is why `Options` is a landmark here without anything reading it: a landmark is
+-- recorded and not descended into, and pruning the rows is what brings PreviewScroll - past
+-- node 1200 in a plain walk - inside the same 400-node budget the panels are found in.
 
 local LANDMARKS = {
     gameplayTabs = "tabs", gameplayPanel = "panel", gameplaySubPanel = "sub",
     summaryPanel = "summary", appearancePanel = "appearance",
+    PreviewScroll = "preview", Options = "rows",
 }
 
 --- The named panels of a screen, and the shallowest ListBox as a tab strip of last resort.
@@ -1234,9 +1257,80 @@ local function proseUnder(node, cap, budget)
 end
 M.proseUnder = proseUnder
 
+--- The name of the setting the preview panel is describing, and the description itself.
+---
+--- Not `proseUnder`, and the difference is the whole point. That one tells prose from a label
+--- by length because on character creation there is nothing else to tell them apart by; here
+--- the screen has already done the separating - everything under PreviewScroll is the
+--- explanation, except the branch the game names PreviewName, which is the setting's own
+--- caption. So the text is taken whole and no threshold is applied, which matters: the
+--- shortest description on the Игра tab is "Отрегулировать интенсивность вибрации
+--- контроллера." at 96 bytes against a PROSE_MIN of 80, and one shorter would have been
+--- silently dropped.
+---
+--- A node with text of its own is not descended into, and that is the whole of the second
+--- attempt at this. A description arrives in one of two layouts and the layer met the easy
+--- one first: a single Run, where the TextBlock above it and the Run itself say the same
+--- thing and the neighbour test collapses them. The other splits the paragraph across Runs
+--- with LineBreaks between - the TextBlock still carries the whole of it - so collapsing
+--- neighbours left the whole *and* both halves, and "Общая инициатива на полном экране" was
+--- explained twice running. The container is the complete text and its Runs are that same
+--- text cut up, so taking the container and stopping is right in both layouts.
+---
+--- Newlines are collapsed rather than kept. Several descriptions are laid out as a lead-in
+--- and one paragraph per option ("Аватар: …", "Предыдущий: …"), and the sentence punctuation
+--- already there is what a screen reader pauses on.
+local function previewParts(node)
+    local name, out, n, seen = nil, {}, 0, {}
+    local function rec(o, depth, inName)
+        if o == nil or #out >= 8 or n >= 200 or depth > 14 then return end
+        local id = tostring(o)
+        if seen[id] then return end
+        seen[id] = true
+        n = n + 1
+        local p = props(o)
+        if p.IsVisible == false then return end
+        -- The caption is a branch, not a node: the game puts the name on the holder and the
+        -- text on a Run below it, so this has to be carried down rather than tested once.
+        local named = inName or (str(p.Name) == "PreviewName")
+        local cls, label = A.splitToString(A.realType(o))
+        local said = false
+        if not A.NO_TEXT[cls] then
+            for _, s in ipairs(A.strings(p.Text, label)) do
+                if A.looksLikeText(s) then
+                    said = true
+                    s = (loca(s):gsub("%s+", " "):gsub("^ ", ""):gsub(" $", ""))
+                    if s ~= "" then
+                        if named then name = name or s
+                        elseif out[#out] ~= s then out[#out + 1] = s end
+                    end
+                end
+            end
+        end
+        if said then return end
+        local ch, cn = A.kids(o)
+        for i = 1, cn do rec(ch[i], depth + 1, named) end
+    end
+    rec(node, 0, false)
+    if #out == 0 then return name, nil end
+    return name, table.concat(out, " ")
+end
+M.previewParts = previewParts
+
 --- The description that belongs to the choice under the cursor.
 function M.selectionProse(marks)
-    local node = marks and (marks.panel or marks.appearance)
+    if marks == nil then return nil end
+    -- The options screen first: it is the one screen where both could be found at once (the
+    -- rows are pruned, but a future tab need not be), and its preview is the more specific
+    -- answer - it is bound to the row the cursor is on, where a panel is bound to the screen.
+    -- The name is dropped here and kept for the details key: the row has just been announced
+    -- and saying "Кармические кубики. Кармические кубики позволяют…" is one word of answer
+    -- behind one word of echo.
+    if marks.preview ~= nil then
+        local _, said = previewParts(marks.preview)
+        if said ~= nil then return said end
+    end
+    local node = marks.panel or marks.appearance
     if node == nil then return nil end
     local parts = proseUnder(node, 4, 300)
     if #parts == 0 then return nil end
@@ -1290,6 +1384,16 @@ function M.detailsLines()
     end
     local marks = landmarks(a.node)
     local out = {}
+    -- On the options screen this key is the one that answers "say that again, all of it".
+    -- The paragraph is spoken with the row, and moving on cuts it off - which is the right
+    -- default and no use at all to someone who wanted to hear the end of it. Taken with the
+    -- setting's own name, unlike the announcement, because arriving here from four rows
+    -- further down needs to say which setting is being explained.
+    if marks.preview ~= nil then
+        local name, said = previewParts(marks.preview)
+        if name ~= nil then out[#out + 1] = name end
+        if said ~= nil then out[#out + 1] = said end
+    end
     if marks.sub ~= nil then
         for _, s in ipairs(visibleScan(marks.sub, 400, 20).texts) do out[#out + 1] = s end
     end
@@ -3058,9 +3162,11 @@ M.focusText = focusText
 
 --- The landmarks of the screen on display, with screens that have none asked only once.
 ---
---- The walk is bounded but it is not free, and on a screen with no panel of prose - the
---- options screen, the save list - paying for it on every focus change buys nothing. So the
---- answer "there is nothing of the sort here" is remembered per screen and the walk skipped.
+--- The walk is bounded but it is not free, and on a screen with no panel of prose - the save
+--- list - paying for it on every focus change buys nothing. So the answer "there is nothing
+--- of the sort here" is remembered per screen and the walk skipped. The options screen used
+--- to be the example given here and is now the opposite one: it has a panel of prose, per
+--- row, and skipping the walk on it was what kept the explanations silent.
 M.proseScreen = nil
 M.proseHere = nil
 M.proseWatch = 0
@@ -3072,7 +3178,7 @@ local function panelMarks(widget)
     end
     if M.proseHere == false then return nil end
     local marks = landmarks(widget.node)
-    M.proseHere = (marks.panel ~= nil or marks.appearance ~= nil)
+    M.proseHere = (marks.panel ~= nil or marks.appearance ~= nil or marks.preview ~= nil)
     return marks
 end
 
