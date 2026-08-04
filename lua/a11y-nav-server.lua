@@ -154,6 +154,127 @@ function M.stop(hard)
     return ok
 end
 
+-- The index of the level ------------------------------------------------------------------
+--
+-- Two objects decide the whole prologue - the transponder that ends it and the rune that
+-- opens a pod - and **neither has a display name**. `DisplayName` is absent on both, so
+-- `nameOf` returns nil and the client scanner drops them before any category is asked, which
+-- is why a player could stand ten metres from the thing the objective names and hear
+-- nothing. Widening the radius could never have fixed that, and neither could better word
+-- matching: there is no word.
+--
+-- What they do have is a template - the name whoever built the level wrote, in English, the
+-- same in every language. `Osi.GetTemplate` is the only way to it and it is server-only, so
+-- the index is built here and left in a file for the client to pick up. A net message was the
+-- other option and is the wrong one: this is a few hundred rows, it is wanted once per level,
+-- and a file survives the client state being wiped by a save load.
+--
+-- Built in slices across ticks. 2036 entities carry a uuid and asking each for its template
+-- costs about ten seconds in one go - which as a single frame is a hang, and as a hang during
+-- loading is a crash report nobody can read.
+
+M.INDEX_FILE = "A11y/level_index.txt"
+
+-- What is worth indexing, and what each thing should be called out loud.
+--
+-- Ordered: the first pattern that matches wins, so the specific ones come before the general.
+-- Everything else on the level is scenery and is left out - an index of all 2036 would be the
+-- same wall of barrels the scanner already refuses to read out.
+M.INDEX_KINDS = {
+    { "Controlpanel",        "пульт" },
+    { "_Console",            "пульт" },
+    { "Lever",               "рычаг" },
+    { "Rune_Key",            "руна-ключ" },
+    { "_Key_",               "ключ" },
+    { "Rune_Tablet",         "руническая табличка" },
+    { "TOOL_Ladder",         "лестница" },
+    { "DOOR_",               "дверь" },
+    { "_Hatch",              "люк" },
+    { "WaypointShrine",      "точка перехода" },
+    { "PUZ_",                "механизм" },
+    { "Interactive",         "механизм" },
+}
+
+-- What is never worth saying out loud, tested before anything else.
+--
+-- The first index came back 128 rows and 118 of them were noise of exactly the kind this
+-- project keeps refusing to read out: 41 `Helper_Waypoint_A`, which are invisible pathing
+-- hints for the AI and not the fast-travel shrines the name suggests; 35 `Quest_CMB_StalkBulb`,
+-- which are throwable bulbs that carry a Quest_ prefix and nothing else; and invisible
+-- blockers. A category answering "where do I go" with forty invisible markers is worse than
+-- one that answers nothing, because it sounds like it worked.
+M.INDEX_SKIP = {
+    "Helper_",           -- invisible AI hints, waypoints among them
+    "InvisibleBlocker",
+    "Quest_CMB_",        -- consumables that happen to be quest-tagged
+    "Quest_Swarming",    -- spawners
+    "Blocker",
+    "_Trigger",
+}
+
+local function indexKind(tpl)
+    for i = 1, #M.INDEX_SKIP do
+        if tpl:find(M.INDEX_SKIP[i]) then return nil end
+    end
+    for i = 1, #M.INDEX_KINDS do
+        if tpl:find(M.INDEX_KINDS[i][1]) then return M.INDEX_KINDS[i][2] end
+    end
+    return nil
+end
+
+M.indexing = nil
+
+--- Walk the level a slice at a time and write down where the navigable things are.
+function M.buildIndex(force)
+    if M.indexing ~= nil and not force then return false end
+    local all = soft(Ext.Entity.GetAllEntities)
+    if type(all) ~= "table" then
+        _P("[nav-srv] index: GetAllEntities gave " .. type(all))
+        return false
+    end
+    M.indexing = { all = all, at = 1, rows = {}, kept = 0, seen = 0 }
+    _P("[nav-srv] index: walking " .. #all .. " entities")
+
+    local tick
+    tick = Ext.Events.Tick:Subscribe(function()
+        local st = M.indexing
+        if st == nil then
+            soft(function() Ext.Events.Tick:Unsubscribe(tick) end)
+            return
+        end
+        local stop = math.min(st.at + 150, #st.all)
+        for i = st.at, stop do
+            local e = st.all[i]
+            local u = soft(function() return e.Uuid.EntityUuid end)
+            if u ~= nil then
+                st.seen = st.seen + 1
+                local tpl = soft(function() return Osi.GetTemplate(u) end)
+                if type(tpl) == "string" then
+                    local kind = indexKind(tpl)
+                    if kind ~= nil then
+                        local p = soft(function() return e.Transform.Transform.Translate end)
+                        if p ~= nil then
+                            st.kept = st.kept + 1
+                            -- Tab separated and flat on purpose: the client reads this on a
+                            -- keypress and a JSON parse of a few hundred rows is not free.
+                            st.rows[#st.rows + 1] = string.format("%s\t%s\t%.1f\t%.1f\t%.1f\t%s",
+                                u, kind, p[1], p[2], p[3], tpl)
+                        end
+                    end
+                end
+            end
+        end
+        st.at = stop + 1
+        if st.at > #st.all then
+            soft(function() Ext.Events.Tick:Unsubscribe(tick) end)
+            soft(Ext.IO.SaveFile, M.INDEX_FILE, table.concat(st.rows, "\n"))
+            _P("[nav-srv] index: " .. st.kept .. " of " .. st.seen .. " -> " .. M.INDEX_FILE)
+            M.indexing = nil
+        end
+    end)
+    return true
+end
+
 local function onMessage(channel, payload)
     if channel ~= M.CHANNEL then return end
     local msg = soft(Ext.Json.Parse, payload)
@@ -167,6 +288,8 @@ local function onMessage(channel, payload)
         M.moveToObject(msg.uuid, msg.speed)
     elseif msg.cmd == "stop" then
         M.stop(msg.hard == true)
+    elseif msg.cmd == "index" then
+        M.buildIndex(msg.force == true)
     else
         _P("[nav-srv] unknown command: " .. tostring(msg.cmd))
     end

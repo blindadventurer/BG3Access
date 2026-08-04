@@ -75,6 +75,67 @@ M.yawOf = yawOf
 ---
 --- Names arrive several ways and none of them is present on everything, so each is tried in
 --- turn. A localisation handle is resolved the same way as everywhere else (E10).
+-- The level index, built by the server half ------------------------------------------------
+--
+-- A thing with no display name is dropped by the scan, and that is not a rare corner: the
+-- transponder that ends the prologue and the rune-key that opens Shadowheart's pod both have
+-- **no `DisplayName` at all**. A player could stand ten metres from the object their
+-- objective names and hear nothing, and no radius or better word-matching could have helped -
+-- there is no word to match.
+--
+-- The server writes down what those things are, taken from the template name the level
+-- designer wrote (see a11y-nav-server.lua). This reads that file once and keeps it, so a
+-- nameless entity can still be called something: "пульт", "рычаг", "лестница", "ключ".
+M.index = nil
+M.indexAt = 0
+
+--- The index, read from disk once and then kept.
+---
+--- The miss path matters more than the hit here: this is called from `nameOf`, which runs for
+--- every entity of every sweep, so "no index yet" has to cost nothing at all. Hence the
+--- counter - a missing file is re-checked every few hundred calls, not every one, and the
+--- request to build it goes out once rather than on each nameless barrel.
+M.indexMiss = 0
+M.indexAsked = false
+
+local function levelIndex()
+    if M.index ~= nil then return M.index end
+    M.indexMiss = M.indexMiss + 1
+    if M.indexMiss % 500 ~= 1 then return nil end
+    local src = soft(Ext.IO.LoadFile, "A11y/level_index.txt")
+    if type(src) ~= "string" or src == "" then
+        if not M.indexAsked then
+            M.indexAsked = true
+            soft(function() M.requestIndex() end)
+            _P("[nav] level index missing - asked the server to build one")
+        end
+        return nil
+    end
+    local by = {}
+    local n = 0
+    for line in src:gmatch("[^\r\n]+") do
+        local u, kind, x, y, z, tpl = line:match("^(%S+)\t([^\t]+)\t(%S+)\t(%S+)\t(%S+)\t(.*)$")
+        if u ~= nil then
+            n = n + 1
+            by[u] = { kind = kind, x = tonumber(x), y = tonumber(y), z = tonumber(z),
+                      template = tpl }
+        end
+    end
+    if n == 0 then return nil end
+    M.index = by
+    _P("[nav] level index: " .. n .. " navigable things")
+    return by
+end
+M.levelIndex = levelIndex
+
+--- Ask the server to build it. Cheap to call: the server ignores a second request while one
+--- is already walking the level.
+function M.requestIndex(force)
+    M.index = nil
+    local body = soft(Ext.Json.Stringify, { cmd = "index", force = force == true })
+    return try(function() Ext.Net.PostMessageToServer(M.CHANNEL, body) end).ok
+end
+
 local function nameOf(e)
     local n = soft(function() return e.DisplayName.Name:Get() end)
     if type(n) == "string" and n ~= "" then return n end
@@ -84,6 +145,14 @@ local function nameOf(e)
     if type(h) == "string" and h ~= "" then
         local t = soft(function() return Ext.Loca.GetTranslatedString(h) end)
         if type(t) == "string" and t ~= "" then return t end
+    end
+    -- Nothing the game will say out loud. Before giving up - which used to mean the object
+    -- vanished from the scan entirely - ask what the level was built from.
+    local idx = levelIndex()
+    if idx ~= nil then
+        local u = soft(function() return e.Uuid.EntityUuid end)
+        local row = u and idx[u]
+        if row ~= nil then return row.kind, true end
     end
     return nil
 end
@@ -406,7 +475,7 @@ function M.scan(radius, quiet)
             local dx, dz = p[1] - pos[1], p[3] - pos[3]
             local dist = math.sqrt(dx * dx + dz * dz)
             if dist <= radius and dist > 0.3 then
-                local name = nameOf(e)
+                local name, indexed = nameOf(e)
                 if name ~= nil then
                     local kind, rank, usable = kindOf(e)
                     local dir = bearing(dx, dz, yaw)
@@ -420,6 +489,13 @@ function M.scan(radius, quiet)
                     out[#out + 1] = { entity = e, name = name, kind = kind, rank = rank,
                                       dist = dist, dir = dir, pos = p, looted = looted,
                                       usable = usable,
+                                      -- Named by the level index rather than by the game.
+                                      -- Anything that had to be rescued that way is a fixture
+                                      -- - a console, a lever, a ladder, a key - and belongs in
+                                      -- "ориентиры" whatever else is true of it, because it is
+                                      -- exactly the class of thing a player is trying to find
+                                      -- and the only class the game refuses to name.
+                                      indexed = indexed or nil,
                                       -- Never opened, so what is inside is unknown rather than
                                       -- absent. The list used to make these look exactly like a
                                       -- container already emptied, and that is how a corpse
@@ -589,7 +665,8 @@ local function matches(key, it)
         -- hundred metres, and a category that answers "where do I go" with loot answers a
         -- different question than the one asked. Chests and crates are still here - by name,
         -- through the stems, which is also what keeps a rucksack out.
-        return it.kind == "дверь" or isMarkerNamed(it.name) or isLandmark(it.name)
+        return it.indexed == true or it.kind == "дверь" or isMarkerNamed(it.name)
+               or isLandmark(it.name)
     end
     if key == "quest" then
         if M.questKeys == nil then return false end
@@ -631,6 +708,21 @@ function M.rebuildView()
     -- metres away and hold nothing the scan would ever return.
     if cat.key == "explore" then
         out = M.exploreView()
+    elseif cat.key == "landmarks" then
+        -- The index first, and the sweep's own landmarks folded in behind it: a door the game
+        -- names is worth hearing next to a console it does not, and the index knows nothing
+        -- about doors it was never told to record.
+        out = M.indexView()
+        local have = {}
+        for i = 1, #out do have[tostring(out[i].uuid)] = true end
+        for i = 1, #M.list do
+            local it = M.list[i]
+            if matches("landmarks", it) then
+                local u = soft(function() return it.entity.Uuid.EntityUuid end)
+                if u == nil or not have[tostring(u)] then out[#out + 1] = it end
+            end
+        end
+        table.sort(out, function(x, y) return (x.dist or 0) < (y.dist or 0) end)
     else
         local limit = M.FAR[cat.key] and M.SCAN_RADIUS or M.radius
         out = {}
@@ -869,6 +961,42 @@ function M.stepTarget(anchor)
 end
 
 --- The places on this level the character has never stood near, nearest first.
+--- The navigable fixtures of the level, from the index rather than from the sweep.
+---
+--- Built like `exploreView` and for the same reason: these are not a filter over what was
+--- scanned. The client's spatial query returns a hundred-odd entities where the level holds
+--- two thousand, so a console eighty metres away is simply not in the sweep to be filtered -
+--- which is why the first version of this listed four doors and none of the four things the
+--- player was actually looking for.
+---
+--- The index carries world positions, so distance and bearing are arithmetic and the entity
+--- never has to be reachable at all. That is the whole point: the answer to "which way is the
+--- transponder" must not depend on being near enough to the transponder to see it.
+function M.indexView()
+    local idx = M.levelIndex()
+    if idx == nil then return {} end
+    local me = M.me()
+    local pos = me and positionOf(me)
+    if pos == nil then return {} end
+    local yaw = yawOf(me)
+
+    local out = {}
+    for u, r in pairs(idx) do
+        if r.x ~= nil and r.z ~= nil then
+            local dx, dz = r.x - pos[1], r.z - pos[3]
+            local dist = math.sqrt(dx * dx + dz * dz)
+            -- The entity is looked up so that walking to it still works: `walkTo` sends a
+            -- uuid, and the server can reach an object the client cannot see.
+            out[#out + 1] = { name = r.kind, kind = nil, dist = dist,
+                              dir = bearing(dx, dz, yaw),
+                              pos = { r.x, r.y, r.z }, uuid = u, indexed = true,
+                              entity = soft(Ext.Entity.Get, u) }
+        end
+    end
+    table.sort(out, function(x, y) return x.dist < y.dist end)
+    return out
+end
+
 function M.exploreView()
     M.anchorsScan()
     local anchors = M.anchors
@@ -950,11 +1078,46 @@ end
 --
 -- The one exception is an exploration anchor. It has no name and no kind; the direction is
 -- everything it is.
+-- What is inside a body or a box, said in the list rather than found by walking to it.
+--
+-- This is the evening the feature was written for: a rune had to be fetched from "one of the
+-- corpses", nothing said which, and the only way to find out was to walk to each of seventeen
+-- in turn. `contentsOf` could answer that the whole time - it is the same call the layer
+-- already makes to tell an emptied container from a full one - and nothing ever asked it.
+--
+-- Capped at three names. A corpse with a longer pocket than that is a shopping list, and the
+-- list is walked to decide where to go, not to do the shopping; the rest is behind the
+-- details key.
+M.PEEK = 3
+
+local function peek(it)
+    if it.looted then return nil end
+    if it.kind ~= "труп" and it.kind ~= "контейнер" and not it.unopened then return nil end
+    local items = M.contentsOf(it.entity)
+    if items == nil or #items == 0 then return nil end
+    local names, seen = {}, {}
+    for i = 1, #items do
+        local n = items[i].name
+        -- Nameless loot is real and common; saying "и ещё что-то" is honest and short.
+        if type(n) == "string" and n ~= "" and not seen[n] then
+            seen[n] = true
+            names[#names + 1] = n
+            if #names >= M.PEEK then break end
+        end
+    end
+    if #names == 0 then return nil end
+    local more = (#items > #names) and (" и ещё " .. (#items - #names)) or ""
+    return table.concat(names, ", ") .. more
+end
+M.peek = peek
+
 local function describe(it)
     local parts = { it.name }
     if it.kind then parts[#parts + 1] = it.kind end
     if it.looted then parts[#parts + 1] = "пусто"
     elseif it.unopened then parts[#parts + 1] = "не обыскано" end
+    local inside = soft(function() return peek(it) end)
+    if inside ~= nil then parts[#parts + 1] = "внутри " .. inside end
     -- Why pressing A will not be enough. Said in the list rather than only on arrival, because
     -- the decision it changes - walk over there at all, and with whom - is taken from the list.
     local lock = M.lockPhrase(it.entity)
