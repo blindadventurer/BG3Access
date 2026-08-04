@@ -373,6 +373,15 @@ function W.tick()
 
     local ws = soft(Pad.findWidgets) or {}
 
+    -- The heartbeat comes first, and it has to: it is the only thing telling the watchdog
+    -- outside that this probe is alive, and standing down is not the same as being dead.
+    -- Written before the quiet guard below, because putting it after meant that sitting on
+    -- the main menu - which is one of the quiet screens - looked exactly like a wiped Lua
+    -- state, and the watchdog re-armed every eleven seconds for as long as the menu was up.
+    if W.ticks % 60 == 0 then
+        soft(Ext.IO.SaveFile, BEAT, tostring(W.ticks) .. "|" .. tostring(W.now()))
+    end
+
     -- Stand down while a load is on screen, and for a few seconds after it goes: the tree is
     -- still settling when the loading screen lifts, and the state may have been rebuilt
     -- underneath us. Coming back is free - the next pass rebuilds W.up from scratch.
@@ -405,7 +414,6 @@ function W.tick()
     end
 
     if W.ticks % 60 == 0 then
-        soft(Ext.IO.SaveFile, BEAT, tostring(W.ticks) .. "|" .. tostring(W.now()))
         for nm in pairs(W.FOLLOW) do
             if W.HOT[nm] == nil and vis[nm] ~= nil then soft(followed, nm, vis[nm]) end
         end
