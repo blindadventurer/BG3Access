@@ -133,10 +133,18 @@ if (-not $Yes) {
     # that means yes to the people this layer speaks to: U+0434 and U+0434 U+0430, the Cyrillic
     # "d" and "da". Built from code points rather than typed, because PS 5.1 reads a .ps1 with
     # no BOM as ANSI and the letters written out would arrive here as two other letters.
+    #
+    # Not $yes, and that is not a style preference. PowerShell does not distinguish case in
+    # variable names, so $yes *is* the [switch]$Yes parameter above - assigning a string to it
+    # throws "Cannot convert value System.String to type SwitchParameter" and, with
+    # $ErrorActionPreference = Stop, takes the whole script with it. It only ever ran when -Yes
+    # was passed, which skips this block entirely: the exe passes it, so the exe worked, and
+    # every install from the ZIP or the one-liner onto a machine without the Script Extender
+    # died right here, at the question. Shipped that way in 0.3.0 and 0.3.1.
     $d = [char]0x434
-    $yes = "^(y|yes|$d|$d" + [char]0x430 + ")$"
+    $yesPattern = "^(y|yes|$d|$d" + [char]0x430 + ")$"
     $answer = ((Read-Host "   Download and install it? [Y/n]") + "").Trim()
-    if ($answer -and $answer -notmatch $yes) {
+    if ($answer -and $answer -notmatch $yesPattern) {
         Ok "not downloaded - nothing was changed"
         Write-Host "     To do it yourself: https://github.com/$REPO/releases - the zip holds one"
         Write-Host "     DWrite.dll, and it goes into $bin"
