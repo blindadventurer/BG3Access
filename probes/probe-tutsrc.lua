@@ -263,6 +263,167 @@ function T.expand(name, prop)
     return #out
 end
 
+-- Opening a Noesis collection ------------------------------------------------------------
+--
+-- `UnifiedTutorials`, `Tutorials` and `TutorialNotifications` come back as
+-- `Noesis::BaseCollection`, and a walk over `GetAllProperties` does not open one: a collection
+-- has no properties to speak of, it has a count and an indexer, and which spelling of those
+-- the binding exposes is not something to guess at. So every shape is tried and what each one
+-- answered is written down; the reader of the file picks the one that worked.
+
+local function probeAccess(o, out, label)
+    out[#out + 1] = "-- " .. tostring(label)
+    local function try(name, fn)
+        local ok, r = pcall(fn)
+        if ok then
+            out[#out + 1] = string.format("   %-24s %-9s %s", name, type(r), str(r):sub(1, 90))
+            return r
+        end
+        out[#out + 1] = string.format("   %-24s ERR       %s", name, tostring(r):sub(1, 80))
+        return nil
+    end
+    try("tostring", function() return tostring(o) end)
+    local tn = try("GetObjectType", function() return Ext.Types.GetObjectType(o) end)
+    try("#o", function() return #o end)
+    try("o.Count", function() return o.Count end)
+    try("o.Length", function() return o.Length end)
+    try("o.ChildrenCount", function() return o.ChildrenCount end)
+    try("o:Count()", function() return o:Count() end)
+    try("o:GetCount()", function() return o:GetCount() end)
+    try("o[0]", function() return o[0] end)
+    try("o[1]", function() return o[1] end)
+    try("o:Get(0)", function() return o:Get(0) end)
+    try("o:GetItem(0)", function() return o:GetItem(0) end)
+    try("o:Item(0)", function() return o:Item(0) end)
+    try("o:Child(0)", function() return o:Child(0) end)
+    try("pairs count", function()
+        local n = 0
+        for _ in pairs(o) do n = n + 1 end
+        return n
+    end)
+    try("ipairs count", function()
+        local n = 0
+        for _ in ipairs(o) do n = n + 1 end
+        return n
+    end)
+    -- What the extender itself says the type is made of, which is the answer when every
+    -- guess above fails.
+    if tn ~= nil then
+        local ti = soft(Ext.Types.GetTypeInfo, tostring(tn))
+        if ti ~= nil then
+            out[#out + 1] = "   type " .. tostring(tn) .. " kind=" ..
+                            str(soft(function() return ti.Kind end))
+            soft(function()
+                local names = {}
+                for k, v in pairs(ti.Members or {}) do
+                    names[#names + 1] = tostring(k) .. ":" ..
+                        tostring(soft(function() return tostring(v.TypeName) end) or "?")
+                end
+                table.sort(names)
+                for _, s in ipairs(names) do out[#out + 1] = "     member " .. s end
+            end)
+        end
+    end
+    return out
+end
+
+--- Find an object carrying a named property anywhere in the data-context graph, and open it.
+---
+--- Searched across every widget, not just the tutorial panel: the collections hang off a
+--- shared data context, and the panel that led us to them is gone the moment the hint is
+--- dismissed - which is most of the time.
+function T.collection(prop, widgetName)
+    prop = prop or "UnifiedTutorials"
+    local ws = soft(Pad.findWidgets) or {}
+    local found, out, seen = nil, {}, {}
+
+    local function hunt(o, depth, trail)
+        if o == nil or found ~= nil or depth > 5 then return end
+        local id = tostring(o)
+        if seen[id] then return end
+        seen[id] = true
+        local p = soft(function() return o:GetAllProperties() end)
+        if type(p) ~= "table" then return end
+        if p[prop] ~= nil then
+            found = { obj = p[prop], where = trail .. "." .. prop }
+            return
+        end
+        for k, v in pairs(p) do
+            local ks = tostring(k)
+            if type(v) == "userdata" and ks:sub(1, 1) ~= "." and ks ~= "Parent" then
+                hunt(v, depth + 1, trail .. "." .. ks)
+            end
+        end
+    end
+
+    for i = 1, #ws do
+        local nm = str(ws[i].name)
+        if widgetName == nil or nm == widgetName then
+            local p = soft(function() return ws[i].node:GetAllProperties() end)
+            if type(p) == "table" and p.DataContext ~= nil then
+                hunt(p.DataContext, 0, nm .. ".DataContext")
+            end
+        end
+        if found ~= nil then break end
+    end
+
+    if found == nil then
+        Ext.Utils.Print("[tutsrc] " .. prop .. " not found on any widget")
+        return nil
+    end
+
+    out[#out + 1] = "found at " .. found.where
+    probeAccess(found.obj, out, prop)
+    Ext.IO.SaveFile("A11y/tutsrc_coll_" .. prop .. ".txt", table.concat(out, "\n"))
+    Ext.Utils.Print("[tutsrc] " .. prop .. " at " .. found.where ..
+                    " -> tutsrc_coll_" .. prop .. ".txt")
+    T.last = found.obj
+    return found.where
+end
+
+--- Walk a collection with whichever accessor turned out to work, and print the entries.
+function T.items(prop, getter, count, widgetName)
+    if T.last == nil or prop ~= nil then soft(T.collection, prop, widgetName) end
+    local o = T.last
+    if o == nil then return nil end
+    local n = tonumber(count)
+    if n == nil then
+        n = soft(function() return o.Count end) or soft(function() return #o end) or 0
+    end
+    local out = { tostring(prop) .. ": " .. tostring(n) .. " items" }
+    for i = 0, math.min(tonumber(n) or 0, 200) - 1 do
+        local it = nil
+        if getter == "index" then it = soft(function() return o[i] end)
+        elseif getter == "index1" then it = soft(function() return o[i + 1] end)
+        elseif getter == "get" then it = soft(function() return o:Get(i) end)
+        elseif getter == "item" then it = soft(function() return o:Item(i) end)
+        else it = soft(function() return o[i] end) or soft(function() return o:Get(i) end) end
+        if it == nil then
+            out[#out + 1] = "[" .. i .. "] nil"
+        else
+            out[#out + 1] = "[" .. i .. "] " .. str(A.realType(it))
+            local p = soft(function() return it:GetAllProperties() end)
+            if type(p) == "table" then
+                local keys = {}
+                for k in pairs(p) do keys[#keys + 1] = tostring(k) end
+                table.sort(keys)
+                for _, k in ipairs(keys) do
+                    local v = p[k]
+                    local text = locaOf(v)
+                    local s = (text ~= nil) and text or str(v)
+                    if type(v) ~= "function" and k:sub(1, 1) ~= "." then
+                        out[#out + 1] = string.format("      %-26s %s",
+                            k, (s:gsub("[\r\n]+", " / ")):sub(1, 200))
+                    end
+                end
+            end
+        end
+    end
+    Ext.IO.SaveFile("A11y/tutsrc_items_" .. tostring(prop) .. ".txt", table.concat(out, "\n"))
+    Ext.Utils.Print("[tutsrc] items -> tutsrc_items_" .. tostring(prop) .. ".txt")
+    return n
+end
+
 function T.all()
     soft(T.types)
     soft(T.entities)

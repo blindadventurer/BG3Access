@@ -39,7 +39,7 @@ local W = { ticks = 0, sig = nil, up = {}, dumps = {}, dumpTotal = 0, lines = {}
 -- Lua state and the module is re-read from this file: anything typed in is lost exactly when
 -- the player starts playing, which is the only time any of this matters.
 W.FOLLOW = { Notification_c = true, PassiveRoll = true, CombatLog_c = true,
-             TargetInfo_c = true }
+             TargetInfo_c = true, ModalTutorial_c = true }
 
 -- The ones where the interesting moment is shorter than a second.
 --
@@ -196,12 +196,107 @@ function W.snap(tag, hidden)
     return #out
 end
 
+-- The model behind a tutorial hint -------------------------------------------------------
+--
+-- `CurrentPlayer.UIData` carries three Noesis collections: `Tutorials`, the journal - 82
+-- entries with a title, the long description and a per-player HasBeenShown - and
+-- `UnifiedTutorials` / `TutorialNotifications`, both empty except, it is believed, while a
+-- hint is actually up. That belief is the thing this records: the collections are read at the
+-- moment the panel appears, which is the only moment they can be caught.
+--
+-- A collection is an Array in the extender's type system: `#c` for the length and `c[i]` for
+-- an item, one-based, with `c[0]` nil. String indexing throws outright, which is how the
+-- shape was settled rather than guessed.
+
+W.TUTHOOK = { ModalTutorial_c = true, Notification_c = true }
+
+local function uiData()
+    local ws = soft(Pad.findWidgets) or {}
+    local seen = {}
+    local found = nil
+    local function hunt(o, depth)
+        if o == nil or found ~= nil or depth > 5 then return end
+        local id = tostring(o)
+        if seen[id] then return end
+        seen[id] = true
+        local p = soft(function() return o:GetAllProperties() end)
+        if type(p) ~= "table" then return end
+        if p.Tutorials ~= nil and p.UnifiedTutorials ~= nil then found = p return end
+        for k, v in pairs(p) do
+            local ks = tostring(k)
+            if type(v) == "userdata" and ks:sub(1, 1) ~= "." and ks ~= "Parent" then
+                hunt(v, depth + 1)
+            end
+        end
+    end
+    for i = 1, #ws do
+        local p = soft(function() return ws[i].node:GetAllProperties() end)
+        if type(p) == "table" and p.DataContext ~= nil then hunt(p.DataContext, 0) end
+        if found ~= nil then break end
+    end
+    return found
+end
+
+--- The journal stores its title as a loca handle and its description already rendered, which
+--- is why one of them came out as "hac27dae7gbd60g4dd4…" and the other as a sentence.
+local function locaText(v)
+    if type(v) ~= "string" then return str(v) end
+    if v:match("^h%x%x%x%x%x%x%x%xg") == nil then return v end
+    local t = soft(Ext.Loca.GetTranslatedString, v)
+    if type(t) == "string" and t ~= "" then return t end
+    return v
+end
+
+local function entryLine(it)
+    local p = soft(function() return it:GetAllProperties() end)
+    if type(p) ~= "table" then return str(it) end
+    local function f(k) return locaText(soft(function() return p[k] end)) end
+    return "Title=" .. f("Title") .. " Category=" .. f("Category") ..
+           " shown=" .. str(p.HasBeenShown) .. " new=" .. str(p.IsNewTutorial) ..
+           " desc=" .. (f("DescriptionController"):gsub("[\r\n]+", " / ")):sub(1, 160)
+end
+
+--- What the three collections hold right now, and which journal entries are marked seen.
+function W.tutModel(why)
+    local d = uiData()
+    if d == nil then W.note("MODEL " .. tostring(why) .. " no UIData found") return nil end
+    for _, name in ipairs({ "UnifiedTutorials", "TutorialNotifications" }) do
+        local c = soft(function() return d[name] end)
+        local n = (c ~= nil) and (soft(function() return #c end) or 0) or -1
+        W.note("MODEL " .. tostring(why) .. " " .. name .. " n=" .. tostring(n))
+        for i = 1, math.min(n, 6) do
+            local it = soft(function() return c[i] end)
+            if it ~= nil then W.note("   [" .. i .. "] " .. entryLine(it)) end
+        end
+    end
+    -- The journal is 82 entries and is not worth writing out per hint; what changes is the
+    -- seen flag, and only the ones now marked are news.
+    local t = soft(function() return d.Tutorials end)
+    local n = (t ~= nil) and (soft(function() return #t end) or 0) or 0
+    local shown = {}
+    for i = 1, n do
+        local it = soft(function() return t[i] end)
+        if it ~= nil then
+            local p = soft(function() return it:GetAllProperties() end)
+            if type(p) == "table" and p.HasBeenShown == true then
+                shown[#shown + 1] = locaText(soft(function() return p.Title end))
+            end
+        end
+    end
+    W.note("MODEL " .. tostring(why) .. " Tutorials n=" .. n .. " shown=[" ..
+           table.concat(shown, " | ") .. "]")
+    return n
+end
+
 -- The pass -----------------------------------------------------------------------------
 
 local function appeared(nm, w)
     local info = soft(Pad.visibleScan, w.node, 500, 30) or { nodes = 0, texts = {} }
     W.note("SHOW " .. nm .. " n=" .. tostring(info.nodes) ..
            " [" .. table.concat(info.texts, " | ") .. "]")
+    -- Before the dump, not after: the collections behind a hint are emptied as soon as it is
+    -- acknowledged, and a dump of 2500 nodes is long enough to lose them in.
+    if W.TUTHOOK[nm] then soft(W.tutModel, "on " .. nm) end
     local k = (W.dumps[nm] or 0) + 1
     W.dumps[nm] = k
     -- Dumped on the way in, and only the first few times. A HUD badge that flickers all
