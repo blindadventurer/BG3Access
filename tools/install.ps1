@@ -178,6 +178,12 @@ try {
 
 # --- 5. the half that cannot live inside the game ------------------------------------------------
 
+# Found here rather than down in the shortcut step, because the speech companion wants it too:
+# the play launcher it writes is "start the companion if it is missing, then start this".
+$exe = Join-Path $GameDir "bin\bg3_dx11.exe"
+if (-not (Test-Path $exe)) { $exe = Join-Path $GameDir "bin\bg3.exe" }
+if (-not (Test-Path $exe)) { $exe = $null }
+
 if ($NoSpeech) {
     Step "Speech companion"
     Ok "skipped (-NoSpeech) - start it by hand with tools\speak.ps1 -Watch"
@@ -185,7 +191,9 @@ if ($NoSpeech) {
 } else {
     Step "Speech companion"
     try {
-        & (Join-Path $PSScriptRoot "install-speech-service.ps1")
+        $speechArgs = @{}
+        if ($exe) { $speechArgs.GameExe = $exe }
+        & (Join-Path $PSScriptRoot "install-speech-service.ps1") @speechArgs
     } catch {
         Bad "the speech companion did not install: $_"
     }
@@ -226,18 +234,31 @@ if ($NoSpeech) {
 
 if (-not $NoShortcut) {
     Step "Desktop shortcut"
-    $exe = Join-Path $GameDir "bin\bg3_dx11.exe"
-    if (-not (Test-Path $exe)) { $exe = Join-Path $GameDir "bin\bg3.exe" }
-    if (Test-Path $exe) {
+    if ($exe) {
         try {
+            # Through the play launcher when there is one, straight at the executable when there
+            # is not. The launcher is the only thing on this machine that ever checks whether the
+            # companion is still alive, and starting the game is the moment that answer matters -
+            # so a shortcut that skips it is a shortcut into silence.
+            #
+            # The icon is set back to the game's own: a .lnk takes its icon from its target, and
+            # the target is now a script file. Nothing about what this starts has changed.
+            $play = Join-Path $env:LOCALAPPDATA "BG3Access\Play BG3.vbs"
             $lnk = Join-Path ([Environment]::GetFolderPath("Desktop")) "Baldurs Gate 3 (no launcher).lnk"
             $sh = New-Object -ComObject WScript.Shell
             $s = $sh.CreateShortcut($lnk)
-            $s.TargetPath = $exe
+            if (Test-Path $play) {
+                $s.TargetPath = "wscript.exe"
+                $s.Arguments = """$play"""
+                $s.IconLocation = "$exe,0"
+                $s.Description = "Starts BG3 directly with speech running, skipping the launcher (Steam must be running)"
+            } else {
+                $s.TargetPath = $exe
+                $s.Description = "Starts BG3 directly, skipping the launcher (Steam must be running)"
+            }
             $s.WorkingDirectory = Split-Path $exe
-            $s.Description = "Starts BG3 directly, skipping the launcher (Steam must be running)"
             $s.Save()
-            Ok "Baldurs Gate 3 (no launcher).lnk"
+            Ok ("Baldurs Gate 3 (no launcher).lnk" + $(if (Test-Path $play) { " -> Play BG3.vbs" }))
         } catch {
             Bad "could not create the shortcut: $_"
         }

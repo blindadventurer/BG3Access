@@ -180,6 +180,27 @@ try {
     }
 
     if ($Watch) {
+        # One companion, and no way to have two.
+        #
+        # There are three places a companion can now be started from - the launcher in Startup,
+        # an install, and the shortcut that starts the game - and two of them can fire within a
+        # second of each other. Two processes polling the same bridge means every line spoken
+        # twice, which is a worse failure than either of the ones they guard against. A mutex is
+        # the only check here that cannot race: whoever creates it is the companion, and anyone
+        # who finds it taken says so and leaves.
+        #
+        # An abandoned mutex is the previous companion having been killed rather than having
+        # released it - which is exactly the state this machine was found in, and it means the
+        # job is vacant.
+        $mutex = New-Object System.Threading.Mutex($false, "Local\BG3AccessSpeechCompanion")
+        $mine  = $false
+        try { $mine = $mutex.WaitOne(0) }
+        catch [System.Threading.AbandonedMutexException] { $mine = $true }
+        if (-not $mine) {
+            Write-Host "another companion is already running - leaving it to it"
+            exit 0
+        }
+
         New-Item -ItemType Directory -Force (Split-Path $BridgeFile) | Out-Null
         Write-Host "watching: $BridgeFile  (poll ${PollMs} ms while the game runs, Ctrl+C to stop)"
 
@@ -236,4 +257,7 @@ try {
         }
     }
 }
-finally { [Prism]::Close() }
+finally {
+    [Prism]::Close()
+    if ($mutex) { try { $mutex.ReleaseMutex() } catch { } ; $mutex.Dispose() }
+}

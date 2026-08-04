@@ -75,6 +75,12 @@ screen reader's speech, and puts a shortcut on your Desktop that starts the game
 launcher** — Larian's launcher window has no accessibility information in it at all, and this
 is the simplest way past it. Steam still has to be running for that shortcut to work.
 
+**Start the game from that shortcut rather than from Steam.** It does one thing before the game
+that nothing else does: it checks that the speech companion is still running and starts it if it
+is not. The companion otherwise only comes up when you log in, so on a machine left on for a
+week it has had one chance — and if it died in the meantime, the game comes up, says everything
+it has to say into a file, and nobody reads any of it.
+
 The only difference is who asks about the Script Extender: the ZIP and the one-liner ask in the
 window, `BG3Access-Setup.exe` asks in its opening dialog and then does not stop again.
 
@@ -188,7 +194,9 @@ The most common two:
 - **`script extender` says missing.** The game runs, and no mod code runs with it. Run
   `install.bat` again and say yes when it offers to fetch it.
 - **`speech companion` says not running.** The game is talking to a file and nothing is
-  reading it. Run `install.bat` again; it puts the companion back into Startup and starts it.
+  reading it. Close the game and start it again from the Desktop shortcut, which puts the
+  companion back before it launches. `install.bat` does the same and is safe to re-run at any
+  time — it no longer stops a companion that is working.
 
 The layer also keeps a transcript of everything it said, which is the most useful thing to
 attach when the complaint is "it read the wrong thing":
