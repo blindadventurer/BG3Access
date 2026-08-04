@@ -298,4 +298,9 @@ foreach ($n in $notes) { Write-Host "Note: $n" }
 # Said in an exit code as well as in words, because one caller cannot read the words: the
 # window inside BG3Access-Setup.exe closes itself when this succeeds and waits when it does
 # not, and "did it work" has to be answerable without parsing what was printed.
+#
+# Both ways out are explicit. Falling off the end of the script leaves $LASTEXITCODE holding
+# whatever the last native command in here happened to return - wscript.exe, three files down -
+# and the caller reading that as this script's answer is a coin toss dressed as a check.
 if ($problems.Count) { exit 1 }
+exit 0

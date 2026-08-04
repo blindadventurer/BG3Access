@@ -97,7 +97,7 @@ if (Test-Path $lnk) { Remove-Item $lnk -Force ; Ok "removed" } else { Ok "none" 
 Step "Saved state"
 $a11y = Join-Path $env:LOCALAPPDATA "Larian Studios\Baldur's Gate 3\Script Extender\A11y"
 $gone = 0
-foreach ($f in @("speech.txt", "boot.json", "speech-log.txt", "speech-companion.log")) {
+foreach ($f in @("speech.txt", "boot.json", "speech-log.txt", "speech-companion.log", "install-log.txt")) {
     $p = Join-Path $a11y $f
     if (Test-Path $p) { Remove-Item $p -Force ; $gone++ }
 }

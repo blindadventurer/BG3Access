@@ -35,8 +35,22 @@ set APP=
 for /d %%d in ("%TARGET%\BG3Access-*") do set APP=%%d
 if not defined APP goto unpackfailed
 
+rem The window is the report, and the window is also gone the moment it closes.
+rem
+rem PLAYING.md asks for what it printed when something goes wrong, which is a reasonable thing
+rem to ask of someone who can see it scroll past and an unreasonable thing to ask of everybody
+rem this installer is for. So the same text goes to a file as well, next to the other things a
+rem bug report wants - speech-log.txt and speech-companion.log are in that same folder.
+rem
+rem Through environment variables rather than into the command line: this path contains
+rem "Baldur's Gate 3", and a lone apostrophe ends the PowerShell string it would sit in.
+rem Tee-Object rather than a plain redirect, because a redirect would take the console output
+rem away, and the console output is the half a screen reader can actually read as it happens.
+set INSTALLER=%APP%\tools\install.ps1
+set LOG=%LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Script Extender\A11y\install-log.txt
+
 echo.
-"%PS%" -NoProfile -ExecutionPolicy Bypass -File "%APP%\tools\install.ps1" -Yes
+"%PS%" -NoProfile -ExecutionPolicy Bypass -Command "New-Item -ItemType Directory -Force (Split-Path $env:LOG) | Out-Null; & $env:INSTALLER -Yes *>&1 | Tee-Object -FilePath $env:LOG; exit $LASTEXITCODE"
 if errorlevel 1 goto notready
 
 echo.
@@ -48,6 +62,10 @@ exit /b 0
 echo.
 echo   Something above needs attention - it is written out in full, and said out loud.
 echo   Nothing else was left half done.
+echo.
+echo   All of it was also written to
+echo   %LOG%
+echo   Send that file to https://github.com/blindadventurer/BG3Access/issues
 echo.
 pause
 exit /b 1
