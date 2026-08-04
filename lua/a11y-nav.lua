@@ -2223,14 +2223,41 @@ function M.questGo()
 
     if it == nil then
         M.questTarget = nil
+        -- Why it failed, and not only that it did. There are three different failures behind
+        -- the one sentence this used to say, and they want three different things from the
+        -- player: an objective with no text at all cannot be matched against anything; an
+        -- objective whose words are all too short leaves nothing to match with; and a real
+        -- search that came back empty means the thing is out of range or not loaded.
+        --
+        -- This was written after a timed fight on the nautiloid where the layer counted the
+        -- turns down correctly - "Осталось ходов: 13" - and then said "цель не видна
+        -- поблизости" while the player stood one metre from an object. Which of the three
+        -- links broke was not decidable from the transcript, and a second run of the same
+        -- fight is expensive: it is a fight.
+        M.questFail = { text = obj.text, turns = obj.turns, place = obj.place,
+                        markers = obj.markers, keys = obj.text and M.stems(obj.text) or {},
+                        near = {} }
+        local list = M.scan(80)
+        for i = 1, math.min(#(list or {}), 24) do
+            M.questFail.near[i] = list[i].name .. " " .. string.format("%.0f", list[i].dist or 0)
+        end
+        soft(function() A.write("quest_fail", M.questFail) end)
+
         if obj.markers ~= nil and #obj.markers > 0 then
             -- The label is on the map but nothing near carries that name: still worth saying,
             -- because it names the direction the story runs even when the thing is far.
             parts[#parts + 1] = "метки: " .. table.concat(obj.markers, ", ") .. ", рядом не найдено"
         elseif obj.text == nil and obj.place ~= nil then
             parts[#parts + 1] = "Задачи нет. " .. obj.place
+        elseif obj.text == nil then
+            -- Nothing was searched for, because there was nothing to search for. Said plainly:
+            -- "not visible nearby" invites the player to walk around looking, and there is
+            -- nothing to find.
+            parts[#parts + 1] = "у задачи нет текста, искать нечего"
+        elseif #M.questFail.keys == 0 then
+            parts[#parts + 1] = "в задаче нет длинных слов для поиска"
         else
-            parts[#parts + 1] = "цель не видна поблизости"
+            parts[#parts + 1] = "ничего с таким именем в 80 метрах"
         end
         say(table.concat(parts, ". "))
         return false

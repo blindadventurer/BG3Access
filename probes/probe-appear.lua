@@ -351,6 +351,20 @@ function W.watch(name)
     Ext.Utils.Print("[appear] following " .. str(name))
 end
 
+-- Screens that mean the tree underneath is about to be torn down and rebuilt.
+--
+-- A save load wipes the client state, and the UI goes with it. This probe reads UI nodes and
+-- an 82-entry collection on every widget change, and a node handle does not survive its
+-- element (§9 rule 1) - so a walk that straddles the teardown is reaching into freed memory,
+-- which is not a Lua error that pcall can catch but a native crash with no dump and no event.
+--
+-- The game did die once, 34 ms into a load, with the probe running. That is not proof it was
+-- this; it is a good enough reason to stand down for the one moment nothing here needs to be
+-- watching anyway.
+W.QUIET = { LoadGame_c = true, LoadGame = true, Loading = true, LoadingScreen = true,
+            MainMenu_c = true, ScreenFadeLoading = true }
+W.quiet = 0
+
 function W.tick()
     W.ticks = W.ticks + 1
     -- Every fourth frame. findWidgets is capped at 60 nodes, so this is the one thing here
@@ -358,6 +372,21 @@ function W.tick()
     if W.ticks % 4 ~= 0 then return end
 
     local ws = soft(Pad.findWidgets) or {}
+
+    -- Stand down while a load is on screen, and for a few seconds after it goes: the tree is
+    -- still settling when the loading screen lifts, and the state may have been rebuilt
+    -- underneath us. Coming back is free - the next pass rebuilds W.up from scratch.
+    for i = 1, #ws do
+        if ws[i].visible ~= false and W.QUIET[str(ws[i].name)] then W.quiet = 60 break end
+    end
+    if W.quiet > 0 then
+        W.quiet = W.quiet - 1
+        if W.quiet == 0 then
+            W.sig, W.up = nil, {}
+            W.note("AWAKE after a load screen")
+        end
+        return
+    end
     local vis, sig = {}, ""
     for i = 1, #ws do
         if ws[i].visible ~= false then

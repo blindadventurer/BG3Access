@@ -2001,6 +2001,209 @@ local function savingNow(ws)
 end
 M.savingNow = savingNow
 
+-- The dice roll, and the tutorial hint --------------------------------------------------
+--
+-- Two panels that are up for seconds and were both going to be scraped out of the visual
+-- tree. Neither needs to be. Mapped 2026-08-04 by recording a live session.
+
+--- The record behind a widget: the model the template is bound to.
+---
+--- Not a property of the node. It arrives as a *child* that is not an element - it has no
+--- size and no visibility, only a domain - which is why a walk that only follows elements
+--- never sees it and every reader so far has gone through the tree instead.
+local function dataOf(node)
+    local ch, cn = A.kids(node)
+    for i = 1, cn do
+        local p = soft(function() return ch[i]:GetAllProperties() end)
+        if type(p) == "table" and p.ActualWidth == nil and p.IsVisible == nil then
+            return p
+        end
+    end
+    return nil
+end
+M.dataOf = dataOf
+
+--- Larian's inline markup, taken out of a sentence meant to be heard.
+---
+--- `<LSTag Tooltip="AbilityCheck">проверку</LSTag>` has to keep the word and lose the tag;
+--- `<br>` is a paragraph break and becomes a full stop, because a screen reader run at speed
+--- will otherwise weld the last word of one sentence to the first of the next.
+local function unmarkup(s)
+    if type(s) ~= "string" then return nil end
+    s = s:gsub("<[Bb][Rr]%s*/?>", ". ")
+    s = s:gsub("<[^<>]->", "")
+    s = s:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+    s = s:gsub("%.%s*%.", ".")
+    if s == "" then return nil end
+    return s
+end
+M.unmarkup = unmarkup
+
+--- A dice roll, read from the model rather than from the dice.
+---
+--- Everything worth saying is on the widget's record: what is being attempted, the skill, the
+--- ability, the number to beat, the bonus, the number rolled, and `Success` as a plain
+--- boolean. Three of the fields are loca handles. None of it depends on the animation, and
+--- two of the fields the tree does carry - the skill and the ability - are marked *invisible*
+--- there, so the ordinary scan would have dropped exactly the two a player wants first.
+---
+--- The outcome is deliberately not said as soon as it is known. `FinalResult` and `Success`
+--- are set while `RollState` is still `StartRoll` - measured at six seconds before the panel
+--- showed "НЕУДАЧА!" - and during that window `HasBoostsToAdd` is true and the player can
+--- still spend inspiration. Announcing then would call the roll while the move is still
+--- theirs to make. `ResultReady` is the line.
+---
+--- Do not read the outcome off `ResultTxt` against `ResultTxtFail`: in the final state both
+--- are visible. That was tried and it is ambiguous.
+M.rollKey = nil
+
+function M.rollTick(ws)
+    local node = nil
+    for i = #ws, 1, -1 do
+        local w = ws[i]
+        if w.visible ~= false and str(w.name) == "ActiveRoll" then node = w.node break end
+    end
+    if node == nil then
+        M.rollKey = nil
+        return false
+    end
+    local d = dataOf(node)
+    if d == nil then return false end
+
+    local state = str(d.RollState)
+    local ready = (state == "ResultReady" or state == "Finished")
+    local key = state .. "|" .. str(d.TargetNumber) .. "|" .. str(d.FinalResult) ..
+                "|" .. str(d.Success) .. "|" .. str(d.SelectedDialogueLine)
+    if key == M.rollKey then return true end
+    M.rollKey = key
+
+    local parts = {}
+    if not ready then
+        -- The setup, said once, while the roll is still the player's to shape.
+        local line = unmarkup(str(d.SelectedDialogueLine))
+        if line ~= nil and line ~= "nil" then parts[#parts + 1] = line end
+        local skill = loca(str(d.SkillOrAbility))
+        local check = loca(str(d.AbilityCheckText))
+        if skill ~= nil and skill ~= "nil" then parts[#parts + 1] = skill end
+        if check ~= nil and check ~= "nil" and check ~= skill then parts[#parts + 1] = check end
+        local target = tonumber(d.TargetNumber)
+        if target ~= nil then parts[#parts + 1] = "нужно " .. target end
+        local bonus = tonumber(d.MaxBonusValue)
+        if bonus ~= nil and bonus > 0 then
+            parts[#parts + 1] = "можно добавить до " .. bonus
+        end
+        parts[#parts + 1] = "бросок — кнопка Y"
+    else
+        -- The result. The game writes the whole sentence itself, and it is better than one
+        -- assembled here because it names the skill in the right case.
+        local said = loca(str(d.SkillOrAbilityResultText))
+        local rolled = tonumber(d.RolledNumber1)
+        local total = tonumber(d.FinalResult)
+        local target = tonumber(d.TargetNumber)
+        if rolled ~= nil then
+            local line = "выпало " .. rolled
+            if total ~= nil and total ~= rolled then line = line .. ", итог " .. total end
+            if target ~= nil then line = line .. " против " .. target end
+            parts[#parts + 1] = line
+        end
+        parts[#parts + 1] = (d.Success == true) and "успех" or "провал"
+        if said ~= nil and said ~= "nil" and said ~= "" then parts[#parts + 1] = said end
+    end
+
+    if #parts == 0 then return true end
+    local text = table.concat(parts, ", ")
+    _P("[pad] roll: " .. text)
+    say(text)
+    return true
+end
+
+--- A tutorial hint.
+---
+--- Two things make this panel unreadable by the ordinary scan, and both had to be met before
+--- a word of it came out:
+---
+---   * **It arrives empty and fills a beat later.** `IsInitialized` goes false → true and the
+---     title and body are empty nodes until it does, so reading on the frame the widget
+---     appears reads nothing at all.
+---   * **Its whole content sits inside an `ls.LSNineSliceImage`**, which `visibleScan` prunes
+---     outright as a decorative frame - correctly, everywhere else, since one is thirty Image
+---     nodes. Here the frame is the panel, and the scan reports five nodes and no text.
+---
+--- So the walk here is its own: it does not prune the frame, and it does not descend into a
+--- node that has text of its own, because the body arrives both whole on a TextBlock and cut
+--- into Runs with LineBreaks between them (the same shape as the options screen's preview).
+M.tutorialKey = nil
+
+local TUT_SKIP = { Image = true, Rectangle = true, ColumnDefinition = true,
+                   RowDefinition = true, Path = true, Ellipse = true }
+
+local function tutorialText(node)
+    local out, n, seen = {}, 0, {}
+    local function rec(o, depth)
+        if o == nil or #out >= 6 or n >= 300 or depth > 16 then return end
+        local id = tostring(o)
+        if seen[id] then return end
+        seen[id] = true
+        n = n + 1
+        local p = props(o)
+        if p.IsVisible == false then return end
+        local cls, label = A.splitToString(A.realType(o))
+        if TUT_SKIP[cls] then return end
+        local said = false
+        for _, s in ipairs(A.strings(p.Text, label)) do
+            if A.looksLikeText(s) then
+                said = true
+                local t = unmarkup(loca(s))
+                if t ~= nil and out[#out] ~= t then out[#out + 1] = t end
+            end
+        end
+        if said then return end
+        local ch, cn = A.kids(o)
+        for i = 1, cn do rec(ch[i], depth + 1) end
+    end
+    rec(node, 0)
+    return out
+end
+M.tutorialText = tutorialText
+
+function M.tutorialTick(ws)
+    local node = nil
+    for i = #ws, 1, -1 do
+        local w = ws[i]
+        if w.visible ~= false and str(w.name) == "ModalTutorial_c" then node = w.node break end
+    end
+    if node == nil then
+        M.tutorialKey = nil
+        return false
+    end
+    -- Nothing to read yet. Answered from the model rather than from an empty tree, so the
+    -- difference between "not filled" and "nothing there" is never guessed at.
+    local d = dataOf(node)
+    if d ~= nil and d.IsInitialized == false then return true end
+
+    local parts = tutorialText(node)
+    if #parts == 0 then return true end
+
+    -- The last part is the dismiss button ("Готово") and it is not the hint; it is said as an
+    -- instruction instead, with the button that works, because on the pad this modal takes
+    -- the controls until it is answered.
+    local key = table.concat(parts, "|")
+    if key == M.tutorialKey then return true end
+    M.tutorialKey = key
+
+    local body = {}
+    for i = 1, #parts do
+        -- "Общее обучение" is the category, and it is the same on every hint of this kind.
+        if parts[i] ~= "Общее обучение" and parts[i] ~= "Готово" then
+            body[#body + 1] = parts[i]
+        end
+    end
+    local text = "Обучение. " .. table.concat(body, ". ") .. ". Закрыть — кнопка A"
+    _P("[pad] tutorial: " .. text)
+    say(text)
+    return true
+end
+
 --- Is this the list itself under the focus, rather than something standing over it?
 ---
 --- The three shapes the list ever focuses: the campaign header, the row container of a save
@@ -3436,6 +3639,21 @@ local function readerTick()
             M.saving = false
             say("Сохранено", false)
         end
+    end
+
+    -- A tutorial modal takes the pass whole, and takes it before the confirmation box does,
+    -- because on the pad it is one: it holds the controls until it is answered with A, and
+    -- nothing underneath it can be acted on meanwhile.
+    if soft(function() return M.tutorialTick(ws) end) then
+        throttle(micros() - t0)
+        return
+    end
+
+    -- A roll takes the pass for the plainest reason there is: it is a decision with a number
+    -- attached and a button waiting, and everything else on screen at that moment is scenery.
+    if soft(function() return M.rollTick(ws) end) then
+        throttle(micros() - t0)
+        return
     end
 
     -- A confirmation box takes the pass whole. It is the one thing on screen that must be

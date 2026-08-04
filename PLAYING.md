@@ -208,8 +208,16 @@ The most common three:
   companion back before it launches. `install.bat` does the same and is safe to re-run at any
   time — it no longer stops a companion that is working.
 
-The layer also keeps a transcript of everything it said, which is the most useful thing to
-attach when the complaint is "it read the wrong thing":
+A transcript of everything the layer has said is the most useful thing to attach when the
+complaint is "it read the wrong thing" — and one is being written already, by the speech
+companion, without anyone starting it:
+
+```bash
+notepad %LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Script Extender\A11y\speech-companion.log
+```
+
+That is the one to send, because it covers what already happened. The other transcript tool
+starts recording when you run it and so has nothing to say about the session that went wrong:
 
 ```bash
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\speech-log.ps1
