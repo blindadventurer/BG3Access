@@ -133,6 +133,11 @@ the things standing around you; on a panel it is the lines of the panel.
 doors, items. This is how a room gets built up in your head without sitting through thirty
 barrels first.
 
+One of those kinds is **ориентиры**, and it is the one to reach for when you do not know
+where to go. It does not list what is near you — it lists the fixtures of the whole level:
+doors, ladders, consoles, levers, keys. Distance and direction, at any range. That is the
+list that ends a "where is the thing my quest is about" walk in one press instead of forty.
+
 **Home** — how the walk is going: how far is left, and whether that number is going down.
 On a panel it goes to the top of the list.
 
@@ -173,7 +178,17 @@ category instead.
   cut off mid-sentence, which is the point; **Delete** reads it again from the start.
 - Conversations: who is speaking, the line, and the answers as you move between them.
 - The world around you, by category and by distance, and walking to any of it with progress
-  reported on the way.
+  reported on the way. A body or a box says what is in it as you step past — three names,
+  then "и ещё" and a count — so finding the one corpse that holds a quest item does not mean
+  walking to seventeen of them in turn.
+- **Things the game itself refuses to name.** The console that ends the prologue and the rune
+  that opens a pod both have no name at all in the game's data, so nothing could ever have
+  read them out. The layer now calls such a thing what it is — пульт, рычаг, лестница, ключ —
+  taken from what the level was built from.
+- Dice rolls: what is being attempted, the skill, the number to beat and your bonus before
+  you throw; what came up and whether it passed after. The outcome waits until the roll is
+  actually settled, because until then you can still spend inspiration on it.
+- Tutorial hints, with the tag markup taken out.
 - Combat: whose turn it is, what you are aiming at, and what the game says about the move
   under the cursor.
 - The journal objective, and when one finishes and the next appears.
