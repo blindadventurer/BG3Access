@@ -2297,19 +2297,65 @@ M.bookAt = 0
 local function journalScan(widget)
     local quests, tasks, lastTitle = {}, {}, nil
     local budget = { n = 2000 }
+    -- Measured 2026-08-06 on the open journal: 333 nodes, reached 513 times. Without this the
+    -- walk compounds on every node that has more than one path into it - the same dump with
+    -- the guard removed and the budget raised to sixty thousand still ran out. Which is why
+    -- this used to come back with the quests and none of their tasks: the budget was gone
+    -- before the walk ever reached the detail panel. `readRow` further up has carried the
+    -- same guard from the start; this walk was written without it.
+    local seen = {}
+
+    -- One task per sentence, and the record wins.
+    --
+    -- With the guard in, the same objective arrives twice: once as a data record, which
+    -- carries the loca handle and the game's own ObjectivePriority, and once as a rendered
+    -- element in the detail panel, which carries neither. Both are wanted - the element is
+    -- what still answers if the record moves again - but two entries for one task made
+    -- `bookObjective` choose by priority between duplicates, and it chose the one without the
+    -- handle, which costs the exact key and falls back to matching by text. So they are
+    -- merged on the sentence, and whichever arrives second fills in what the first lacked.
+    local byText = {}
+    local function addTask(t)
+        local prev = byText[t.text]
+        if prev == nil then
+            tasks[#tasks + 1] = t
+            byText[t.text] = t
+            return
+        end
+        if prev.handle == nil and t.handle ~= nil then
+            prev.handle, prev.priority, prev.done = t.handle, t.priority, t.done
+        end
+    end
+
     local function rec(o, depth)
         if o == nil or budget.n <= 0 or depth > 24 then return end
         budget.n = budget.n - 1
+        local id = tostring(o)
+        if seen[id] then return end
+        seen[id] = true
         local p = props(o)
         if p.IsVisible == false then return end
 
         -- A task: the text is a handle, and the priority is the order the game shows them in.
+        --
+        -- The handle is kept beside the text, not thrown away once it is rendered. It is the
+        -- game's own key for this objective, and the shipped journal table (a11y-questdata)
+        -- is keyed by it - which is what turns "Соединить нервы передатчика" into the UUID of
+        -- the thing that sentence is about. Matching on the rendered text works too and is
+        -- the fallback, but it is a string comparison in whatever language the game is in,
+        -- and this is an exact key in no language at all.
         if p.ObjectivePriority ~= nil or (p.Description ~= nil and p.IsCompleted ~= nil) then
-            local text = loca(str(p.Description))
+            local raw = str(p.Description)
+            local text = loca(raw)
             if type(text) == "string" and text ~= "" and not text:find("^h%x")
                and not text:find("^ls::") then
-                tasks[#tasks + 1] = { text = text, done = p.IsCompleted == true,
-                                      priority = tonumber(p.ObjectivePriority) or 0 }
+                local handle = nil
+                if type(raw) == "string" and raw:match("^h%x%x%x%x%x%x%x%xg") ~= nil then
+                    handle = raw
+                end
+                addTask({ text = text, handle = handle,
+                          done = p.IsCompleted == true,
+                          priority = tonumber(p.ObjectivePriority) or 0 })
             end
             return
         end
@@ -2326,6 +2372,32 @@ local function journalScan(widget)
         if str(p.Name) == "Title" then
             local t = A.collectText(o, 20, 4)[1]
             if t ~= nil then lastTitle = t end
+        end
+
+        -- The task as the screen actually draws it.
+        --
+        -- The branch above wants a data record - Description as a loca handle, next to
+        -- IsCompleted and ObjectivePriority - and that is how the panel was read when this was
+        -- written. In this build no such record exists anywhere in the tree: the detail panel
+        -- carries an element **named** Description with the sentence already rendered inside
+        -- it. Measured with the journal open on «Бежать с наутилоида», where the only task on
+        -- screen, «Найти способ бежать с наутилоида.», appeared exactly this way and nothing
+        -- in the tree held IsCompleted at all.
+        --
+        -- No handle here, so no exact key - but the shipped journal table is also indexed by
+        -- the rendered text, and that index exists for precisely this case.
+        if str(p.Name) == "Description" then
+            local t = A.collectText(o, 20, 4)[1]
+            if type(t) == "string" and t ~= "" and not t:find("^h%x") and t ~= "[ForceUpdate]" then
+                -- In the order the game lists them, which is the order it wants them read.
+                -- Done-ness is not knowable from here: the completed ones sit under their own
+                -- heading and the panel has a "hide completed" toggle, so what is on screen is
+                -- what is still to do.
+                -- A priority above anything the game issues, so that if the record never
+                -- arrives these still order after the real ones rather than in front of them.
+                addTask({ text = t, handle = nil, done = false,
+                          priority = 100000 + #tasks })
+            end
         end
 
         local ch, cn = A.kids(o)

@@ -34,7 +34,12 @@ $luaSrc   = Join-Path $root "lua"
 
 $appData  = Join-Path $env:LOCALAPPDATA "Larian Studios\Baldur's Gate 3"
 $modsDir  = Join-Path $appData "Mods"
-$pak      = Join-Path $modsDir "BG3Access.pak"
+# $pakPath and not $pak: PowerShell variable names are case-insensitive, so `$pak` is the same
+# variable as the `[switch]$Pak` parameter above - assigning a string to it threw
+# "Cannot convert value System.String to type SwitchParameter" at line 37 and the script died
+# before it staged anything. It had done that since the switch was added, which is why the
+# graft has only ever been run through graft-mod.ps1 directly.
+$pakPath  = Join-Path $modsDir "BG3Access.pak"
 $settings = Join-Path $appData "PlayerProfiles\Public\modsettings.lsx"
 
 $folder   = "BG3Access"
@@ -72,10 +77,10 @@ if ($Pak) {
     }
 
     New-Item -ItemType Directory -Force $modsDir | Out-Null
-    $out = & $Divine -g bg3 -a create-package -s $modRoot -d $pak -l warn 2>&1
+    $out = & $Divine -g bg3 -a create-package -s $modRoot -d $pakPath -l warn 2>&1
     if ($LASTEXITCODE -ne 0) { Write-Error "divine failed: $out" }
 
-    $fs = [System.IO.File]::OpenRead($pak)
+    $fs = [System.IO.File]::OpenRead($pakPath)
     $head = New-Object byte[] 8
     $fs.Read($head, 0, 8) | Out-Null
     $fs.Dispose()
@@ -86,8 +91,8 @@ if ($Pak) {
                      "Use another Divine build - tools\lslib\Tools\Divine.exe is known good.")
     }
 
-    $size = [math]::Round((Get-Item $pak).Length / 1KB, 1)
-    Write-Host "packed -> $pak  (LSPK v$pakVersion, $size KB)"
+    $size = [math]::Round((Get-Item $pakPath).Length / 1KB, 1)
+    Write-Host "packed -> $pakPath  (LSPK v$pakVersion, $size KB)"
 }
 
 # --- 3. the install that actually works ----------------------------------------------------
