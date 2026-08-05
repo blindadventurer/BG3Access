@@ -282,6 +282,53 @@ if ($NoSpeech) {
     }
 }
 
+# --- 5b. did any of that actually land on the machine ------------------------------------------
+#
+# An installer that checks its own work with its own eyes can be lied to, and on 2026-08-05 this
+# one was, for four days running.
+#
+# Windows lets a process be given a private copy of the user profile. A packaged application does
+# it to its own children - everything they write under %LOCALAPPDATA% or %APPDATA% is quietly
+# redirected into
+#
+#     %LOCALAPPDATA%\Packages\<package>\LocalCache\...
+#
+# while reads still fall through to the real file when no private copy exists. Inside that view
+# an install is perfect: every file is where it was put, Test-Path says yes, status.bat says yes.
+# Outside it, %LOCALAPPDATA%\BG3Access does not exist at all. The Startup launcher - which is one
+# of the few paths *not* redirected - was real, and pointed into a folder that was not, so it
+# failed silently at every logon; the only companion that ever ran was one started inside the
+# private view, and it died with the process that started it.
+#
+# So the writes get checked from the outside in the only way that needs no help: put a file with
+# a name nothing else could have, and see whether it turns up somewhere it was not sent.
+Step "Where the files went"
+$installedDir = Join-Path $env:LOCALAPPDATA "BG3Access"
+if (Test-Path $installedDir) {
+    $probeName = ".write-probe-" + [guid]::NewGuid().ToString("N")
+    $probe = Join-Path $installedDir $probeName
+    try {
+        Set-Content -LiteralPath $probe -Value "x" -Encoding ASCII
+        $shadow = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA "Packages\*\LocalCache\*\BG3Access\$probeName") -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+        if ($shadow) {
+            Bad "these files were not written to the machine - they went into a private copy of your profile"
+            Write-Host "     $($shadow[0].DirectoryName)"
+            Write-Host ""
+            Write-Host "     This happens when the install is run from inside another application"
+            Write-Host "     rather than from Windows itself. Nothing here will work: the game will"
+            Write-Host "     run the layer and say every line into a file nobody is reading."
+            Write-Host "     Open the unpacked folder in Explorer and double-click install.bat."
+            Say ("The files were written into a private copy of your profile, not to the machine. " +
+                 "Run install dot bat from Windows itself.")
+        } else {
+            Ok "$installedDir - on the machine, not in a private copy"
+        }
+    } catch {
+        Ok "could not be checked: $_"
+    }
+}
+
 # --- 6. a way into the game that does not go through the launcher -----------------------------
 #
 # Larian's launcher is a CEF window with no accessibility tree at all - it is the first barrier
@@ -294,9 +341,9 @@ if (-not $NoShortcut) {
     if ($exe) {
         try {
             # Through the play launcher when there is one, straight at the executable when there
-            # is not. The launcher is the only thing on this machine that ever checks whether the
-            # companion is still alive, and starting the game is the moment that answer matters -
-            # so a shortcut that skips it is a shortcut into silence.
+            # is not. The launcher checks the companion before it starts the game, which is the
+            # moment that answer matters most; the watchdog installed alongside it covers every
+            # other way in, so this is now the quick path rather than the only safe one.
             #
             # The icon is set back to the game's own: a .lnk takes its icon from its target, and
             # the target is now a script file. Nothing about what this starts has changed.
@@ -306,7 +353,10 @@ if (-not $NoShortcut) {
             $s = $sh.CreateShortcut($lnk)
             if (Test-Path $play) {
                 $s.TargetPath = "wscript.exe"
-                $s.Arguments = """$play"""
+                # //B for the same reason the watchdog uses it: if this file ever goes missing,
+                # the script host's answer is a message box, and a message box in front of
+                # somebody who cannot see it is a game that simply never starts.
+                $s.Arguments = "//B ""$play"""
                 $s.IconLocation = "$exe,0"
                 $s.Description = "Starts BG3 directly with speech running, skipping the launcher (Steam must be running)"
             } else {
@@ -341,8 +391,8 @@ if ($problems.Count -eq 0) {
         Write-Host "     interface, and without a pad there is nothing for it to read."
         $n++
     }
-    Write-Host "  $n. Start the game from the Desktop shortcut, not from Steam. It puts the"
-    Write-Host "     speech companion back if it has stopped, and nothing else checks."
+    Write-Host "  $n. Start the game however you like. The Desktop shortcut skips Larian's"
+    Write-Host "     launcher, which cannot be read at all, so it is the easiest way in."
     $n++
     Write-Host "  $n. The layer says one short line out loud when it comes up."
     $n++

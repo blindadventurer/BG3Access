@@ -2,8 +2,9 @@
 #
 # Everything here fails silently on its own: the game has to be found and carry the Script
 # Extender, a pad has to be plugged in for BG3 to raise the interface the layer reads, the
-# layer has to be grafted onto a loaded module, the client bootstrap has to have run, and
-# something has to be turning the speech bridge into speech. One line each, and the failing
+# layer has to be grafted onto a loaded module, the client bootstrap has to have run,
+# something has to be turning the speech bridge into speech, and something has to be watching
+# that that thing is still there at all. One line each, and the failing
 # one names its own fix - this page is what a player is asked for when it has gone quiet, so
 # a line that only says "no" is half an answer.
 #
@@ -75,8 +76,11 @@ if (Test-Path $boot) {
 }
 
 # 4. speech companion
+# Matched on the shape of a launcher's command line, not on the two words appearing anywhere in
+# it - see install-speech-service.ps1, where the same expression decides whether to start one.
+# A status page that says "running" because it found itself is worse than no status page.
 $watch = Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" |
-         Where-Object { $_.CommandLine -like "*speak.ps1*-Watch*" }
+         Where-Object { $_.CommandLine -match 'speak\.ps1[''" ] -Watch' }
 # The path matters as much as the pid. The launcher in Startup holds an absolute path to a copy
 # of speak.ps1, so "running" can mean a copy other than the one you have been editing.
 $watchFrom = $null
@@ -87,6 +91,32 @@ if ($watch) {
 Line "speech companion" ([bool]$watch) $(if ($watch) {
     "running, pid $($watch[0].ProcessId)" + $(if ($watchFrom) { " <- $watchFrom" })
 } else { "not running - run install.bat" })
+
+# 5. and the thing that is supposed to make the line above impossible to see.
+#
+# The companion is started by events - logon, and the Desktop shortcut - and this is the only
+# check that keeps being made after them. A machine that has been on for a week has had one
+# logon; a session started from Steam went through neither. So when this line says no, the line
+# above it is one killed process away from being no for the rest of the evening, and nothing
+# would say so. It is worth its own line for the same reason the controller is: it is the
+# difference between "silent once" and "silent until somebody notices".
+$task = $null
+try { $task = Get-ScheduledTask -TaskName "BG3Access Speech" -ErrorAction SilentlyContinue } catch { }
+if ($task) {
+    # Running is the healthy state, and that is not the usual reading of the word: the task does
+    # not check on the companion, it runs it, so an instance in progress *is* the companion. Ready
+    # means the last one has ended and the next minute has not come round yet - which is fine for
+    # a moment and a problem if the line above still says nothing is running.
+    $detail = switch ($task.State) {
+        "Running"  { "running the companion; if it dies, the next minute starts another" }
+        "Ready"    { "installed, between runs - it starts a companion within a minute" }
+        "Disabled" { "DISABLED - nothing will start speech; enable it or run install.bat" }
+        default    { "$($task.State)" }
+    }
+    Line "watchdog" ($task.State -ne "Disabled") $detail
+} else {
+    Line "watchdog" $false "not installed - run install.bat; nothing will restart a dead companion"
+}
 
 if (Test-Path $bridge) {
     $raw = (Get-Content $bridge -Raw -Encoding UTF8)

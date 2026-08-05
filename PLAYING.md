@@ -75,11 +75,17 @@ screen reader's speech, and puts a shortcut on your Desktop that starts the game
 launcher** — Larian's launcher window has no accessibility information in it at all, and this
 is the simplest way past it. Steam still has to be running for that shortcut to work.
 
-**Start the game from that shortcut rather than from Steam.** It does one thing before the game
-that nothing else does: it checks that the speech companion is still running and starts it if it
-is not. The companion otherwise only comes up when you log in, so on a machine left on for a
-week it has had one chance — and if it died in the meantime, the game comes up, says everything
-it has to say into a file, and nobody reads any of it.
+**Start the game however you like — Steam, the shortcut, anything.** The half of the mod that
+lives outside the game (it turns what the game writes into what your screen reader says) is
+watched by Windows itself: a scheduled task called *BG3Access Speech* looks once a minute,
+whatever happened to the last one, and starts it again if it is gone. The Desktop shortcut
+still checks before it launches the game, so it is the quickest way in, but nothing depends on
+it any more.
+
+This is what the mod going quiet used to look like, and it is worth recognising: the game says
+its opening line, or does not, and everything after that is silence. Nothing on screen is
+wrong. `status.bat` answers it in one line — `speech companion` and `watchdog` are the two
+lines to read.
 
 The only difference is who asks about the Script Extender: the ZIP and the one-liner ask in the
 window, `BG3Access-Setup.exe` asks in its opening dialog and then does not stop again.
@@ -219,9 +225,13 @@ The most common three:
 - **`script extender` says missing.** The game runs, and no mod code runs with it. Run
   `install.bat` again and say yes when it offers to fetch it.
 - **`speech companion` says not running.** The game is talking to a file and nothing is
-  reading it. Close the game and start it again from the Desktop shortcut, which puts the
-  companion back before it launches. `install.bat` does the same and is safe to re-run at any
-  time — it no longer stops a companion that is working.
+  reading it. Wait a minute and run `status.bat` again: the watchdog should have put it back
+  by itself, and if it did, the line above this one — `watchdog` — is the one to send. Starting
+  the game from the Desktop shortcut brings it back immediately, and `install.bat` is safe to
+  re-run at any time; it no longer stops a companion that is working.
+- **`watchdog` says not installed.** Then nothing is checking, and the companion is one killed
+  process away from an evening of silence. `install.bat` registers it. It needs no
+  administrator rights; if it still fails to register, that message is worth an issue.
 
 A transcript of everything the layer has said is the most useful thing to attach when the
 complaint is "it read the wrong thing" — and one is being written already, by the speech
@@ -240,8 +250,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\speech-log.ps1
 
 ## Removing it
 
-Run **`uninstall.bat`**. It takes back every file it added, stops the speech companion, removes
-the Desktop shortcut, and restores the Script Extender settings file it changed. One file is
+Run **`uninstall.bat`**. It takes back every file it added, stops the speech companion and
+removes the scheduled task that watches it, removes the Desktop shortcut, and restores the
+Script Extender settings file it changed. One file is
 deliberately kept: `explored.json`, the record of where you have already been, so that
 reinstalling later does not start you over.
 
