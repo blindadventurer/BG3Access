@@ -4163,6 +4163,23 @@ M.controllerUi = nil
 M.uiMisses = 0
 M.UI_GRACE = 3
 
+--- Whether the controller interface has ever been seen this session, and whether the player has
+--- been told it is missing.
+---
+--- The layer used to open every session by announcing "нужен геймпад" and then, a second later,
+--- "геймпадный интерфейс" - because at startup the menu's `_c` screens are built a beat after
+--- the layer is, so the first settled observation is almost always "not up" and the second is
+--- "up". Neither is a change the player asked about, and both landed on top of the loading
+--- screen's tip, which is the one thing on that screen worth hearing. So the first observation
+--- of a session is now silent in both directions.
+---
+--- The genuine case it used to cover - a machine where the interface never comes up at all,
+--- which is the whole layer failing - is answered instead by silence that lasts: a count of
+--- passes rather than a transition, said once, and only if the interface has never been up.
+M.UI_ALARM = 40
+M.uiEverUp = false
+M.uiAlarmed = false
+
 --- Is there a screen on the tree that the layer can read?
 ---
 --- Cheap on purpose - the widget list straight off ContentRoot, about fifteen nodes, none of
@@ -4200,8 +4217,16 @@ local function watchMode()
     if up == nil then return end
     if up then
         M.uiMisses = 0
+        M.uiEverUp = true
     else
         M.uiMisses = M.uiMisses + 1
+        -- Never up, and it has gone on long enough to be the layer being broken rather than
+        -- one screen replacing another. Said once, behind whatever is being read.
+        if not M.uiEverUp and not M.uiAlarmed and M.uiMisses >= M.UI_ALARM then
+            M.uiAlarmed = true
+            _P("[pad] controller interface never came up")
+            say("Геймпадный интерфейс не включён. В параметрах игры режим ввода должен быть «Контроллер»", false)
+        end
         if M.uiMisses < M.UI_GRACE then return end
     end
     if up == M.controllerUi then return end
@@ -4211,12 +4236,21 @@ local function watchMode()
         return Ext.Utils.GetGlobalSwitches().ControllerMode
     end))
 
+    -- The starting state is not news. Only a change from a state that was actually observed
+    -- is, and it is said behind what is being read rather than over it: the player is in the
+    -- middle of a tip or a line, and this is a note about the layer, not an answer to them.
+    if was == nil then
+        _P("[pad] controller screens " .. (up and "up" or "not up") ..
+           " at start (ControllerMode " .. tostring(M.lastMode) .. ")")
+        return
+    end
+
     if not up then
         _P("[pad] no controller screens (ControllerMode " .. tostring(M.lastMode) .. ")")
-        if was == nil then say("Нужен геймпад") else say("Геймпадный интерфейс выключен") end
+        say("Геймпадный интерфейс выключен", false)
     else
         _P("[pad] controller screens up (ControllerMode " .. tostring(M.lastMode) .. ")")
-        if was ~= nil then say("Геймпадный интерфейс") end
+        say("Геймпадный интерфейс", false)
     end
 end
 
@@ -4727,7 +4761,7 @@ local function readerTick()
     flush()
 end
 
-function M.readerStart()
+function M.readerStart(quiet)
     M.readerStop()
     local id = Ext.Events.Tick:Subscribe(readerTick)
     if id == nil then _P("[pad] FAILED: Tick:Subscribe returned nil") return false end
@@ -4735,7 +4769,11 @@ function M.readerStart()
     _G.A11Y_READER = id
     M.lastScreen, M.lastFocus, M.ticks, M.period = nil, nil, 0, 12
     _P("[pad] reader running (" .. tostring(id) .. ")")
-    say("Чтение экранов включено")
+    -- Silent on the ordinary path. The bootstrap says "Доступность включена" a tick later and
+    -- means the same thing; two lines at startup only meant the first was cut off by the
+    -- second, and both landed on the loading screen's tip. Started by hand from the console it
+    -- still answers, because then it is the answer to a question somebody just asked.
+    if quiet ~= true then say("Чтение экранов включено") end
     return true
 end
 
@@ -4881,7 +4919,7 @@ end
 function M.start()
     M.padStart()
     M.keysStart()
-    M.readerStart()
+    M.readerStart(true)
     -- The world half listens for the server's answers - a destination it refused, above all,
     -- which the player has to hear rather than infer from a character that did not move.
     local nav = _G.Nav

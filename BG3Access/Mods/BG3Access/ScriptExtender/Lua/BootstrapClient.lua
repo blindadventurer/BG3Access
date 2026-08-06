@@ -161,7 +161,11 @@ local function startLayer()
     report("running", { modules = sources })
     -- Said out loud on purpose: after a save load the client state is rebuilt and everything
     -- here runs again, and hearing one short line is how the player knows the layer survived.
-    if G.A11y ~= nil and G.A11y.say ~= nil then pcall(G.A11y.say, "Доступность включена", true) end
+    --
+    -- Queued rather than interrupting. This fires during the loading screen, and the loading
+    -- screen carries the game's own tip - the one piece of writing there, and the layer used to
+    -- cut it in half to say a line about itself.
+    if G.A11y ~= nil and G.A11y.say ~= nil then pcall(G.A11y.say, "Доступность включена", false) end
     return true
 end
 
