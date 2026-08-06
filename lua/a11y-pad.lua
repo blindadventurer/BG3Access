@@ -1557,6 +1557,102 @@ M.PANEL_NAMES = {
 
 --- The confirmation box on top of everything, read whole: what it asks, and what answering
 --- it costs a button-press.
+-- The camp panel ---------------------------------------------------------------------
+--
+-- The screen a player meets when they use the bedroll, and the one that stopped a tester dead:
+-- "открыл окно, понятия не имею как тут выбирать". The layer read seven button captions off it
+-- and not one number, so what the panel is *for* - putting food in a pot until there is enough
+-- for the night - was invisible.
+--
+-- Measured on the live panel. The numbers are two text nodes, «Припасы» and «40/40», and that
+-- pair is the whole state: supplies selected over supplies needed. Everything else in there is
+-- an icon with a record behind it (`Index`, `Object`, `SelectedAmount`), one per stack of food -
+-- a hundred and eighty of them, which is why this reads the summary and not the ring.
+--
+-- What the numbers mean, in the game's own terms: reaching the required amount buys a **long
+-- rest**, which restores all health and spell slots and lets the night's scenes play; short of
+-- it the game offers a **partial rest** instead, which does less and still spends the day.
+--
+-- Said on change rather than on a key, because the number is what the player is changing.
+M.campKey = nil
+
+function M.campTick(ws)
+    local node = nil
+    for i = #ws, 1, -1 do
+        local w = ws[i]
+        local n = str(w.name)
+        if w.visible ~= false and (n == "MakeCamp" or n == "MakeCamp_c") then node = w.node break end
+    end
+    if node == nil then
+        M.campKey = nil
+        return false
+    end
+
+    -- Collected without pruning on class, for the reason the message box needed the same: the
+    -- numbers hang inside decorative frames, and a walk that turns back at a frame never sees
+    -- them.
+    local texts, seen, budget = {}, {}, { n = 1200 }
+    local function rec(o, depth)
+        if o == nil or depth > 16 or budget.n <= 0 then return end
+        local ch, cn = A.kids(o)
+        for i = 1, cn do
+            budget.n = budget.n - 1
+            if budget.n <= 0 then return end
+            local p = props(ch[i])
+            if p.IsVisible ~= false then
+                local cls, label = A.splitToString(A.realType(ch[i]))
+                if not A.NO_TEXT[cls] then
+                    for _, s in ipairs(A.strings(p.Text, label)) do
+                        if A.looksLikeText(s) then
+                            s = s:gsub("^%s+", ""):gsub("%s+$", "")
+                            if not seen[s] then
+                                seen[s] = true
+                                texts[#texts + 1] = s
+                            end
+                        end
+                    end
+                end
+                rec(ch[i], depth + 1)
+            end
+        end
+    end
+    rec(node, 0)
+
+    local have, need, rest, others = nil, nil, nil, {}
+    for _, s in ipairs(texts) do
+        local a, b = s:match("^(%d+)%s*/%s*(%d+)$")
+        if a ~= nil then
+            have, need = tonumber(a), tonumber(b)
+        elseif s == "Припасы" then                       -- the label of the pair above
+        elseif s:find("отдых") then rest = s             -- what this much food buys
+        else others[#others + 1] = s end
+    end
+    if have == nil and rest == nil then return false end
+
+    local key = tostring(have) .. "/" .. tostring(need) .. "|" .. tostring(rest)
+    if key == M.campKey then return true end
+    local first = (M.campKey == nil)
+    M.campKey = key
+
+    local parts = {}
+    if first then parts[#parts + 1] = "Лагерь" end
+    if have ~= nil then
+        parts[#parts + 1] = "припасы " .. have .. " из " .. need
+        -- The one thing the panel never says out loud and the player has to know: enough food
+        -- is the difference between a night that heals everything and a nap.
+        if first then
+            parts[#parts + 1] = (need ~= nil and have >= need)
+                and "хватает на долгий отдых" or "на долгий отдых не хватает"
+        end
+    end
+    if rest ~= nil then parts[#parts + 1] = rest end
+    if first then
+        for i = 1, #others do parts[#parts + 1] = others[i] end
+    end
+    say(table.concat(parts, ". "))
+    return true
+end
+
 function M.messageBox(ws)
     ws = ws or findWidgets()
     local node = nil
@@ -1566,16 +1662,41 @@ function M.messageBox(ws)
     end
     if node == nil then return nil end
 
+    -- Fifteen, not twelve.
+    --
+    -- Measured on the box the game raises before a long rest: its buttons sit at depth 4 and its
+    -- **message sits at fifteen** -
+    --
+    --     MessageBox_c/bgFade/2/MessageBoxNineSlice/ContentParent/ContentHolder/1/
+    --       MessageBoxNineSliceContent/MessageBoxControl/1/MessageScroller/1/1/2/Message/1
+    --
+    -- so a walk that stopped at twelve found every button and never the question. Which is
+    -- exactly what a player met at camp: "A — Да, B — Нет" and no idea what was being asked.
+    -- Eighteen leaves room for one more wrapper without inviting the whole screen in.
+    local MAX_DEPTH = 18
+    local MAX_PARTS = 24
+
     local title, body, list = nil, {}, nil
     local function rec(o, depth)
-        if o == nil or depth > 12 or #body > 8 then return end
+        if o == nil or depth > MAX_DEPTH or #body > MAX_PARTS then return end
         local p = props(o)
         if p.IsVisible == false then return end
         local nm = str(p.Name)
         if nm == "ActionsList" then list = o return end
+        -- The seconds left on a timed box. A bare "-1" read out in the middle of a question is
+        -- worse than nothing, and when it is a real countdown it changes every frame.
+        if nm == "CountdownTimer" then return end
+        -- A class whose own ToString is noise is skipped, but **not its children**.
+        --
+        -- Everywhere else in the layer NO_TEXT prunes the whole subtree, and everywhere else
+        -- that is right: an Image has no text under it worth the walk. Here it was the single
+        -- reason this box has never once been read. The frame around the message is
+        -- `MessageBoxNineSlice`, an `ls.LSNineSliceImage`, and the message hangs **inside** it -
+        -- so the walk turned back three steps in, found the buttons on the other branch, and
+        -- announced a question no one had heard as "A - Да, B - Нет".
         local cls, label = A.splitToString(A.realType(o))
-        if A.NO_TEXT[cls] then return end
-        for _, s in ipairs(A.strings(p.Text, label)) do
+        local quiet = A.NO_TEXT[cls]
+        for _, s in ipairs(quiet and {} or A.strings(p.Text, label)) do
             if A.looksLikeText(s) then
                 s = loca(s:gsub("^%s+", ""):gsub("%s+$", ""))
                 if nm == "Title" and title == nil then title = s
@@ -1610,9 +1731,28 @@ function M.messageBox(ws)
         end
     end
 
+    -- One sentence, not eight.
+    --
+    -- Larian's inline markup does not flatten: `<LSTag Tooltip="CampSupplies">припасов</LSTag>`
+    -- becomes an element of its own between the plain runs, so the walk above collects the
+    -- question in pieces -
+    --
+    --     "У вас достаточно" · "припасов" · ", чтобы восстановить все" · "ОЗ" · "и" · …
+    --
+    -- and every piece said as its own line is a sentence read like a shopping list. Depth-first
+    -- order is already the reading order, so they only have to be glued: a space between two
+    -- words, nothing before a comma. That is the whole rule, and it puts the sentence back the
+    -- way it was written.
+    local text = nil
+    for _, s in ipairs(body) do
+        if text == nil then text = s
+        elseif s:find("^[,%.%!%?%;%:%)]") then text = text .. s
+        else text = text .. " " .. s end
+    end
+
     local lines = {}
     if title ~= nil then lines[#lines + 1] = title end
-    for _, s in ipairs(body) do lines[#lines + 1] = s end
+    if text ~= nil then lines[#lines + 1] = text end
     if #actions > 0 then lines[#lines + 1] = table.concat(actions, ", ") end
     if #lines == 0 then return nil end
     return { node = node, lines = lines, key = table.concat(lines, "|") }
@@ -4380,15 +4520,34 @@ local function readerTick()
     -- focus and the screen under it keeps one.
     local box = soft(function() return M.messageBox(ws) end)
     if box ~= nil then
+        -- Said once the wording has stopped moving.
+        --
+        -- The box is built over several frames: the runs of the sentence arrive one at a time,
+        -- so the key changes on every pass while it fills, and keying on the text alone read the
+        -- same question six times over - measured at camp, six utterances for one press of A.
+        -- Waiting for two passes that agree costs about a tenth of a second and ends it.
         if box.key ~= M.modalKey then
-            M.modalKey = box.key
-            M.lines, M.cursor, M.linesFrom = box.lines, 0, "screen"
-            _P("[pad] message box: " .. table.concat(box.lines, ". "))
-            say(table.concat(box.lines, ". "))
+            if box.key == M.modalSettling then
+                M.modalKey = box.key
+                M.modalSettling = nil
+                M.lines, M.cursor, M.linesFrom = box.lines, 0, "screen"
+                _P("[pad] message box: " .. table.concat(box.lines, ". "))
+                say(table.concat(box.lines, ". "))
+            else
+                M.modalSettling = box.key
+            end
         end
         throttle(micros() - t0)
         return
     end
+    M.modalSettling = nil
+
+    -- The camp panel: how many supplies are in the pot, and what that buys.
+    --
+    -- Not a pass of its own - the player is moving a cursor over a ring of food and wants to
+    -- keep hearing what is under it - so this speaks the state and lets the rest of the pass
+    -- run. See M.campTick for why it is worth saying at all.
+    soft(function() return M.campTick(ws) end)
     if M.modalKey ~= nil then
         -- The box is gone. Where the player stands has not been said since it went up, and
         -- after an answer to a question about deleting something it is the first thing they
