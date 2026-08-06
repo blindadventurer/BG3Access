@@ -3523,6 +3523,19 @@ local DIALOGUE_SKIP = {
 -- speaker and text - so taking both gives every line twice.
 local DIALOGUE_COMBINED = { TextBodyContainer = true }
 
+-- The captions of the buttons under the box. `DIALOGUE_SKIP` catches them by node name where
+-- they are on a node with a name, and "Продолжить" is the one that gets through: it arrives as
+-- a fragment of its own and is joined onto the end of nearly every line, which is the phrase
+-- the player kept hearing appear out of nowhere and which broke the scene every time.
+--
+-- Dropped from the **line** only, and never from the answers - "Продолжить." is a legitimate
+-- answer, the one that carries a conversation forward, so putting it in `DIALOGUE_NOISE` would
+-- blank out the option the player is being asked to choose.
+local DIALOGUE_BUTTON = {
+    ["Продолжить"] = true, ["Пропустить"] = true, ["Выбрать"] = true,
+    ["История диалогов"] = true, ["Перестать слушать"] = true, ["Далее"] = true,
+}
+
 local function dialogueNoise(s)
     if DIALOGUE_NOISE[s] then return true end
     if s:find("^DIALOG:") or s:find("^CONTEXT:") then return true end
@@ -3582,6 +3595,20 @@ function M.dialogue()
     local out = { answers = {}, selected = 0 }
     local said, visited = {}, {}
     local saidSeen = {}
+    -- The strict reading, alongside the broad one. Measured 2026-08-06 by dumping the whole box
+    -- with every node named: the line and the speaker have nodes of their own -
+    --
+    --   BodyAndAnswersContainer > DialogueContainer > TextBodyContainer > speakerName
+    --
+    -- - so the line can be taken from where it lives instead of collected from the whole widget
+    -- and filtered afterwards. That is what finally gets rid of "Продолжить" on the end of every
+    -- line: a button caption is not under `TextBodyContainer`, whatever language it is in.
+    --
+    -- Both are collected because the strict one is only known to be right for the shape that was
+    -- measured. If it comes back empty the broad reading is used exactly as before, so a box
+    -- built differently still speaks rather than going silent.
+    local bodyParts, bodySeen = {}, {}
+    local speakerParts, speakerSeen = {}, {}
 
     -- Deduplication is per destination, not global. Sharing one set let a line collected
     -- first swallow the identical text of an answer, and the answers came out blank.
@@ -3593,7 +3620,7 @@ function M.dialogue()
         into[#into + 1] = s
     end
 
-    local function rec(o, depth, inAnswers, current)
+    local function rec(o, depth, inAnswers, current, inBody, inSpeaker)
         -- The answers sit deep: the text of one is a Run at depth 28 under a span inside a
         -- wrap panel inside the list item. A cap of 24 cut every one of them off and the
         -- options came out blank.
@@ -3608,6 +3635,8 @@ function M.dialogue()
 
         local cls, label = A.splitToString(A.realType(o))
         if name == "answerList" then inAnswers = true end
+        if name == "TextBodyContainer" then inBody = true end
+        if name == "speakerName" then inSpeaker = true end
         if inAnswers and current == nil and cls:find("ListBoxItem", 1, true) then
             current = { parts = {}, seen = {}, selected = p.IsSelected == true }
             out.answers[#out.answers + 1] = current
@@ -3619,12 +3648,22 @@ function M.dialogue()
         if not DIALOGUE_COMBINED[name] then
             take(p.Text, into, seen)
             take(label, into, seen)
+            -- The speaker branch is tested first: `speakerName` sits *inside*
+            -- `TextBodyContainer`, so both flags are true there and the name would otherwise be
+            -- collected as part of the line it introduces.
+            if current == nil and inSpeaker then
+                take(p.Text, speakerParts, speakerSeen)
+                take(label, speakerParts, speakerSeen)
+            elseif current == nil and inBody then
+                take(p.Text, bodyParts, bodySeen)
+                take(label, bodyParts, bodySeen)
+            end
         end
 
         local ch, cn = A.kids(o)
-        for i = 1, cn do rec(ch[i], depth + 1, inAnswers, current) end
+        for i = 1, cn do rec(ch[i], depth + 1, inAnswers, current, inBody, inSpeaker) end
     end
-    rec(node, 0, false, nil)
+    rec(node, 0, false, nil, false, false)
 
     for i = 1, #out.answers do
         out.answers[i].text = table.concat(out.answers[i].parts, ", ")
@@ -3634,35 +3673,70 @@ function M.dialogue()
         table.remove(out.answers)
     end
 
-    -- The speaker is whichever fragment ends in a colon - not necessarily the first, since
-    -- the box also carries an echo of the answer just chosen.
-    local rest = {}
-    for i = 1, #said do
-        local s = said[i]
-        if out.speaker == nil and s:find(":%s*$") then
-            out.speaker = s:gsub("%s*:%s*$", "")
-        else
-            rest[#rest + 1] = s
-        end
-    end
-
     -- The same line turns up twice, once split across runs and once whole on the node above
     -- them, so anything contained in another fragment is dropped.
-    local keep = {}
-    for i = 1, #rest do
-        local contained = false
-        for j = 1, #rest do
-            if i ~= j and #rest[j] > #rest[i] and rest[j]:find(rest[i], 1, true) then
-                contained = true break
+    local function longest(list)
+        local keep = {}
+        for i = 1, #list do
+            local contained = false
+            for j = 1, #list do
+                if i ~= j and #list[j] > #list[i] and list[j]:find(list[i], 1, true) then
+                    contained = true break
+                end
             end
+            if not contained then keep[#keep + 1] = list[i] end
         end
-        if not contained then keep[#keep + 1] = rest[i] end
+        return keep
     end
 
-    out.line = table.concat(keep, " ")
+    if #bodyParts > 0 then
+        -- The strict reading. Nothing has to be filtered out of it because nothing else was
+        -- ever let in: the line is what stands under the node the line lives on.
+        if #speakerParts > 0 then
+            local who = table.concat(longest(speakerParts), " "):gsub("%s*:%s*$", "")
+            if who ~= "" then out.speaker = who end
+        end
+        out.line = table.concat(longest(bodyParts), " ")
+    else
+        -- The reading for a box shaped some way that has not been measured. The speaker is
+        -- whichever fragment ends in a colon - not necessarily the first, since the box also
+        -- carries an echo of the answer just chosen - and the button captions have to be taken
+        -- out by name afterwards.
+        local rest = {}
+        for i = 1, #said do
+            local s = said[i]
+            if out.speaker == nil and s:find(":%s*$") then
+                out.speaker = s:gsub("%s*:%s*$", "")
+            else
+                rest[#rest + 1] = s
+            end
+        end
+        local keep = longest(rest)
+        local spoken = {}
+        for i = 1, #keep do
+            local bare = keep[i]:gsub("^%s+", ""):gsub("[%s%.]+$", "")
+            if not DIALOGUE_BUTTON[bare] then spoken[#spoken + 1] = keep[i] end
+        end
+        out.line = table.concat(spoken, " ")
+    end
+
     if out.line == "" then out.line = nil end
     return out
 end
+
+--- What makes two readings of the box the same line.
+---
+--- The speaker is not always a fragment of its own. The same sentence came out of the tree
+--- three passes running as `speaker="Шэдоухарт"` + line, then as no speaker and
+--- `"Шэдоухарт: …"` in one piece, then as the first form again - and keyed on speaker and line
+--- separately that is three different lines, so it was announced three times over. Stripping
+--- punctuation and case collapses both shapes onto one key: the colon, the trailing full stop
+--- and the split all stop mattering.
+local function lineKeyOf(speaker, line)
+    local s = (tostring(speaker or "") .. " " .. tostring(line or "")):lower()
+    return (s:gsub("[%s%p]+", " "):gsub("^ ", ""):gsub(" $", ""))
+end
+M.lineKeyOf = lineKeyOf
 
 --- Speak the conversation as it changes: the line when it is new, the highlighted answer
 --- when it moves. Nothing here is focus-driven - in a session no element is focused at all.
@@ -3671,7 +3745,7 @@ function M.dialogueTick()
     if d == nil then
         if M.inDialogue then
             M.inDialogue = false
-            M.lastLine, M.lastAnswer = nil, nil
+            M.lastLine, M.lastAnswer, M.answerSet = nil, nil, nil
             _P("[pad] dialogue ended")
             say("Диалог закончен")
         end
@@ -3679,25 +3753,58 @@ function M.dialogueTick()
     end
     M.inDialogue = true
 
-    local lineKey = tostring(d.speaker) .. "|" .. tostring(d.line)
+    -- The answers as they stand, as a set and as a position in it. Keeping the set apart from
+    -- the position is the whole fix for answers talking over the line: the game puts the
+    -- options up the moment the node is entered and the voice runs on for seconds after that,
+    -- so "an option is highlighted" is not the same event as "the player chose to look at it".
+    local answerSet = {}
+    for i = 1, #d.answers do answerSet[i] = d.answers[i].text end
+    local setKey = table.concat(answerSet, "|")
+    local here = d.selected > 0 and (d.selected .. "|" .. tostring(answerSet[d.selected])) or nil
+
+    -- An empty speaker is no speaker. It comes out as "" rather than nil when the fragment the
+    -- name was in held only the colon, and "" is truthy in Lua - which is how lines got
+    -- announced with a full stop in front of them.
+    local speaker = d.speaker
+    if type(speaker) ~= "string" or speaker == "" then speaker = nil end
+
+    local lineKey = lineKeyOf(speaker, d.line)
     if d.line ~= nil and lineKey ~= M.lastLine then
         M.lastLine = lineKey
-        M.lastAnswer = nil
-        local what = d.speaker and (d.speaker .. ". " .. d.line) or d.line
-        if #d.answers > 0 then what = what .. ". " .. M.plural(#d.answers, "вариант") end
+        -- Whatever is highlighted at this moment counts as already announced. It was not the
+        -- player who put it there.
+        M.lastAnswer, M.answerSet = here, setKey
+        if #answerSet > 0 then M.lines, M.cursor, M.linesFrom = answerSet, 0, "screen" end
+        local what = speaker and (speaker .. ". " .. d.line) or d.line
         _P("[pad] dialogue: " .. what)
         say(what)
         return true
     end
 
-    if d.selected > 0 then
-        local a = d.answers[d.selected]
-        local key = d.selected .. "|" .. a.text
-        if key ~= M.lastAnswer then
-            M.lastAnswer = key
-            _P("[pad] answer " .. d.selected .. ": " .. a.text)
-            say(d.selected .. ". " .. a.text)
-        end
+    -- The options arrived after the line - the usual case, and the one that cut the subtitle in
+    -- half. Nothing is said here at all.
+    --
+    -- Saying how many there are was the first attempt and it was wrong twice over: it landed in
+    -- the middle of the voice-over, and it answers a question the player can answer themselves
+    -- by walking the list, which they have to do anyway to choose. The count now rides on the
+    -- announcement of each option instead, where it costs no separate utterance. The options go
+    -- under the review cursor here so PageUp and PageDown read them without choosing anything.
+    if setKey ~= "" and setKey ~= M.answerSet then
+        M.answerSet, M.lastAnswer = setKey, here
+        M.lines, M.cursor, M.linesFrom = answerSet, 0, "screen"
+        _P("[pad] answers up: " .. tostring(#answerSet))
+        return true
+    end
+
+    -- Only a move speaks, and a move interrupts: the player asked for this one by pressing a
+    -- direction, so it is an answer to them and goes in front of anything still being read.
+    if d.selected > 0 and here ~= M.lastAnswer then
+        M.lastAnswer = here
+        M.cursor = d.selected
+        local text = d.answers[d.selected].text
+        local where = #answerSet > 1 and (d.selected .. " из " .. #answerSet) or tostring(d.selected)
+        _P("[pad] answer " .. where .. ": " .. text)
+        say(where .. ". " .. text)
     end
     return true
 end
