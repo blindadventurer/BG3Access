@@ -314,6 +314,39 @@ function W.ctxmenu()
     return out
 end
 
+--- What the roll panel's bonus section actually hands back, through the layer's own helpers.
+---
+--- Written because the spoken line stopped changing between builds while the code under it did,
+--- which means the line was not coming from where it was thought to.
+function W.roll()
+    local ws = soft(Pad.findWidgets) or {}
+    local node = nil
+    for i = 1, #ws do
+        if ws[i].visible ~= false and str(ws[i].name) == "ActiveRoll" then node = ws[i].node end
+    end
+    local out = { widget = (node ~= nil) }
+    if node == nil then
+        _P("[rest] no ActiveRoll")
+        A.write("rest_roll", out)
+        return out
+    end
+    local bm = soft(function() return Pad.namedNode(node, "BonusModifiers", 6) end)
+    out.bonusNode = (bm ~= nil)
+    out.fromBonus = soft(function() return Pad.ctxStrings(bm or node, 2500) end) or {}
+    out.fromWhole = soft(function() return Pad.ctxStrings(node, 2500) end) or {}
+    local d = soft(function() return Pad.dataOf(node) end)
+    if type(d) == "table" then
+        out.state = str(d.RollState)
+        out.target = str(d.TargetNumber)
+        out.maxBonus = str(d.MaxBonusValue)
+        out.hasBoosts = str(d.HasBoostsToAdd)
+    end
+    _P("[rest] roll: bonusNode=" .. tostring(out.bonusNode) .. " fromBonus=" .. #out.fromBonus ..
+       " fromWhole=" .. #out.fromWhole .. " state=" .. tostring(out.state))
+    A.write("rest_roll", out)
+    return out
+end
+
 --- Every visible widget, and every string in it. One shot, for when the panel you are looking
 --- for is not the widget you expected.
 ---

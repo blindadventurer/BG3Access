@@ -1612,6 +1612,22 @@ function M.contextPopup(ws)
     return menu, mp
 end
 
+--- A descendant with this exact Name, breadth of the search bounded rather than the whole tree.
+function M.namedNode(node, name, maxDepth)
+    local found = nil
+    local function rec(o, d)
+        if o == nil or found ~= nil or d > (maxDepth or 8) then return end
+        local ch, cn = A.kids(o)
+        for i = 1, cn do
+            local p = props(ch[i])
+            if str(p.Name) == name then found = ch[i] return end
+            rec(ch[i], d + 1)
+        end
+    end
+    rec(node, 0)
+    return found
+end
+
 --- The strings under a node, in tree order, each one only the first time.
 local function ctxStrings(o, limit)
     local out, seen, left = {}, {}, { n = limit or 2500 }
@@ -2343,6 +2359,53 @@ function M.rollTick(ws)
 
     local state = str(d.RollState)
     local ready = (state == "ResultReady" or state == "Finished")
+
+    -- The bonus section, which is the half of this panel the player can still change.
+    --
+    -- Measured on a lockpicking roll: the panel carries «Суммарный бонус», the modifiers that
+    -- make it up («Ловкость», «Воровские инструменты»), whatever is on offer («+1d4») and a line
+    -- that says whether anything is left to add - «Все доступные усиления применены.» None of it
+    -- is in the record the numbers come from, and none of it was ever read, so the player moved
+    -- the d-pad left and right and heard nothing move.
+    --
+    -- Said by difference rather than by understanding the carousel: whatever the player changes
+    -- changes these strings, so re-saying them when they change is feedback that cannot be wrong
+    -- about which slot the cursor is in.
+    if not ready then
+        -- Straight to the section rather than over the whole panel. The bonus rows sit under
+        -- `BonusModifiers`, several hundred nodes deep into a widget with three hundred records
+        -- in it, and a budget small enough to run every pass stopped before reaching them - the
+        -- first build heard "Ловкость рук, Воровские инструменты" and never the numbers.
+        local strs = ctxStrings(M.namedNode(node, "BonusModifiers", 6) or node, 2500)
+        local keep = {}
+        for _, s in ipairs(strs) do
+            -- The bare number of the difficulty class and its two-word label are already said as
+            -- "нужно N" from the record, and "[ForceUpdate]" is a template placeholder.
+            -- Kept: sentences, and anything that is a modifier - "+1", "+1d4", "x1". Dropped:
+            -- the bare difficulty number, its two-word capital label, and the placeholder. The
+            -- first filter here asked for a lowercase letter and threw away every number the
+            -- player was there to hear.
+            if s ~= "[ForceUpdate]" and s ~= "Бросить кубик"
+               and not s:find("^%-?%d+$")
+               and (hasLower(s) or s:find("^[%+%-xх]") ) then
+                keep[#keep + 1] = s
+            end
+        end
+        local line = table.concat(keep, ", ")
+        if line ~= "" and line ~= M.rollBonusSaid then
+            local first = (M.rollBonusSaid == nil)
+            M.rollBonusSaid = line
+            -- On the first pass it rides with the setup below rather than ahead of it; after
+            -- that it is the answer to a button the player just pressed, so it goes on its own.
+            if not first then
+                _P("[pad] roll bonus: " .. line)
+                say(line)
+                return true
+            end
+        end
+    else
+        M.rollBonusSaid = nil
+    end
     local key = state .. "|" .. str(d.TargetNumber) .. "|" .. str(d.FinalResult) ..
                 "|" .. str(d.Success) .. "|" .. str(d.SelectedDialogueLine)
     if key == M.rollKey then return true end
@@ -2364,6 +2427,9 @@ function M.rollTick(ws)
             parts[#parts + 1] = "можно добавить до " .. bonus
         end
         parts[#parts + 1] = "бросок — кнопка Y"
+        -- What the bonus section says, on the pass that first reads the panel. After this it
+        -- speaks on its own, whenever the player changes it.
+        if M.rollBonusSaid ~= nil then parts[#parts + 1] = M.rollBonusSaid end
     else
         -- The result. The game writes the whole sentence itself, and it is better than one
         -- assembled here because it names the skill in the right case.

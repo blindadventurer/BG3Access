@@ -256,7 +256,10 @@ category instead.
   usual range, once, with what to press. It stays quiet in conversations, cutscenes and fights,
   where the view is meant to be somewhere else.
 - Dice rolls: what is being attempted, the skill, the number to beat and your bonus before
-  you throw; what came up and whether it passed after. The outcome waits until the roll is
+  you throw; what came up and whether it passed after. **And the bonus section**, which is the
+  half of that panel you can still change: what your total is made of, what is on offer to add
+  («+1d4»), and when there is nothing left to apply. The d-pad moves through those, and each
+  change is read as you make it. The outcome waits until the roll is
   actually settled, because until then you can still spend inspiration on it.
 - Tutorial hints, with the tag markup taken out.
 - Combat: whose turn it is, what you are aiming at, and what the game says about the move
