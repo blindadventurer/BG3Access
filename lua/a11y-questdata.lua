@@ -10,6 +10,7 @@
 --   M.obj[objectiveID] = { questID, descHandle, markerID... }
 --   M.mk[markerID]     = { { level, type, uuid, labelHandle }, ... }
 --   M.q[questID]       = { titleHandle, categoryID }
+--   M.cat[categoryID]  = { sortingPriority, nameHandle }  -- the journal own sections
 --   M.oh[descHandle]   = objectiveID   -- built at load: the objective a journal line is
 --   M.steps[questID]   = { { stepID, descHandle, objectiveID }, ... }  -- journal order
 --   M.sh[descHandle]   = { questID, stepID, objectiveID }  -- built at load
@@ -2066,6 +2067,23 @@ M.q = {
 ["WYR_Posthouse"]={"h85f05a6fg4d4bg431ag9517g3a4fd8d4c9bf","BaldursGate"},
 ["WYR_RedDwarfMother"]={"h26b64f55g80e2g4ca6g8edfgf3f27d16f608","BaldursGate"},
 ["WYR_Windmill"]={"h8d7b793eg59d3g4621g815cg4206a0917690","BaldursGate"},
+}
+
+M.cat = {
+["Act1_HiddenBoosters"]={0,"ha416046dg2735g43f5ga2ceg41dd420d1942"},
+["Act2_HiddenBoosters"]={0,"hc505afafg81f6g45b1ga1a9g1dca00ca4415"},
+["Act3_HiddenBoosters"]={0,"h3bb030dag2bdfg4b09gb801g1da901f19382"},
+["BaldursGate"]={8,"hc4f8aec9gc4e7g481bgaf9fg7438a2df44ed"},
+["Companions"]={1,"hffe5de5bg5a97g4c9aga10fge8baab7f4f74"},
+["CompletedQuests"]={0,"h8bd09018gb68dg4798gb5a0g273fd76d6757"},
+["Crashside"]={3,"he38092f0g0ee5g477egb295g18e54d2e3468"},
+["Creche"]={6,"h91f98819g9a4cg4db0gaddbg4b247923f6e5"},
+["Grove"]={5,"hf18feb5bg7386g4b91g8fa7gd3e714b031d7"},
+["MainQuest"]={10,"he26ad57ag1412g49a1g92c4g52576d617312"},
+["PersonalStory"]={9,"hbb0e77b0g7a70g4baagb499g9463ccb8dd6d"},
+["Shadowcurse"]={7,"h9563387bga011g4a88g9481g0923bdab7ed7"},
+["Tutorial"]={10,"h17a72460g3f57g4e82g95a0g835789a29cc8"},
+["Underdark"]={4,"h7f990341g8a30g42fagad3ag2f641b2667b4"},
 }
 
 M.steps = {

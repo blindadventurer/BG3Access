@@ -1074,7 +1074,6 @@ end
 function M.exploreView()
     M.anchorsScan()
     local anchors = M.anchors
-    if anchors == nil then return {} end
     M.exploreMark()
 
     local me = M.me()
@@ -1084,6 +1083,43 @@ function M.exploreView()
     local visited = visitedLoad()
 
     local out = {}
+
+    -- Named places first, because a named one is a decision and an anchor is only a bearing.
+    --
+    -- This is the closest thing to the fog a blind player can be given: the level's own outlines,
+    -- minus the ones the party has stood inside, nearest first. It shrinks as the level is walked
+    -- and it is built from the same table the "локации" list uses - so a place heard here and a
+    -- place heard there are the same place, at the same distance, walked to the same way.
+    --
+    -- The anonymous anchors stay underneath rather than being replaced: the named places do not
+    -- cover a whole level, and open ground between them is still somewhere to go.
+    -- Through M rather than the locals: this function sits above the whole places block in the
+    -- file, so none of those names are in scope here - only the fields are. The same trap
+    -- questRecall carries a note about, and it cost this list one silent failure already.
+    local rows, _, lv = M.placeTables()
+    local seenId = {}
+    for i = 1, #(rows or {}) do
+        local row = rows[i]
+        local id = row[1]
+        if not seenId[id] and not M.placeSeen(row, lv) then
+            M.placeShape(row)
+            local d = M.placeDist(row, pos)
+            if d <= M.EXPLORE_MAX then
+                seenId[id] = true
+                local dx, dz = row.cx - pos[1], row.cz - pos[3]
+                out[#out + 1] = { name = M.placeName(row), dist = d,
+                                  dir = bearing(dx, dz, yaw), pos = { row.cx, row[4], row.cz },
+                                  anchor = "p:" .. id, place = true, row = row,
+                                  cluster = M.clusterOf(id) }
+            end
+        end
+    end
+    table.sort(out, function(x, y) return (x.dist or 0) < (y.dist or 0) end)
+    M.markCross(out)
+    local named = #out
+
+    if anchors == nil then return out end
+    local patches = {}
     for i = 1, #anchors do
         local a = anchors[i]
         if not visited[a.guid] then
@@ -1096,11 +1132,15 @@ function M.exploreView()
                 -- "Участок, на два, 180 м" is a direction; "участок, Вымершая деревня, на два,
                 -- 180 м" is somewhere to decide about.
                 M.placeOf(e)
-                out[#out + 1] = e
+                patches[#patches + 1] = e
             end
         end
     end
-    table.sort(out, function(x, y) return x.dist < y.dist end)
+    -- Sorted among themselves and appended, rather than merged into one distance order: an
+    -- anonymous patch forty metres away is not a better answer than a named place at ninety,
+    -- and interleaving the two is how the list stopped being an order at all.
+    table.sort(patches, function(x, y) return x.dist < y.dist end)
+    for i = 1, #patches do out[named + i] = patches[i] end
     return out
 end
 
@@ -1156,6 +1196,9 @@ local function placeTables()
         M.camNear, M.camSaid = nil, nil
         M.places = pd.sub[lv]
         M.waypoints = pd.wp[lv]
+        -- A new level is a new set of shrines, and the answer wants to be here before the list
+        -- is read rather than after.
+        soft(M.waypointsAsk)
         _P("[nav] places: " .. #(M.places or {}) .. " areas, " ..
            #(M.waypoints or {}) .. " waypoints in " .. lv)
     end
@@ -1276,17 +1319,25 @@ function M.placeAt(pos)
     return best
 end
 
---- What the level itself is called - "Пустошь", not "WLD_Main_A".
-function M.levelName()
+--- What a level is called - "Пустошь", not "WLD_Main_A".
+---
+--- Any level, not only the one being stood in: the journal points at objects on levels that are
+--- not loaded, and the name is the difference between "цель не найдена" and "цель в Яслях
+--- гитьянки", which is a direction rather than a dead end.
+function M.levelTitle(lv)
     local pd = _G.PlaceData
-    local lv = M.myLevel()
-    if pd == nil or lv == nil or type(pd.lvl) ~= "table" then return nil end
+    if lv == nil or pd == nil or type(pd.lvl) ~= "table" then return nil end
     local h = pd.lvl[lv]
     if h == nil then return nil end
     local pad = _G.Pad
     local t = (pad ~= nil and pad.loca ~= nil) and soft(function() return pad.loca(h) end) or nil
     if type(t) ~= "string" or t == "" or t == h then return nil end
     return t
+end
+
+--- What the level being stood in is called.
+function M.levelName()
+    return M.levelTitle(M.myLevel())
 end
 
 --- The place a scan entry stands in, memoised by the thing rather than recomputed per sentence.
@@ -1313,6 +1364,54 @@ function M.placeOf(it)
     return name ~= false and name or nil
 end
 
+-- Which shrines this playthrough has actually found -----------------------------------
+--
+-- The shipped table knows every shrine of every level; the save knows which ones have been
+-- switched on. Until now the list said all sixteen of Act 1 from the first minute - six of them
+-- underground, in places the player has no way to have heard of - which is clutter at best and,
+-- at worst, the shape of the act given away by a scanner.
+--
+-- The server reads `DB_WaypointUnlocked` and sends the set whenever it changes (see
+-- NavSrv.waypointTick). Two rules here, and both matter:
+--
+--   * **nil is not empty.** Until the first message arrives - an old server half, a session
+--     still loading - every shrine is shown, exactly as before. Failing open costs a cluttered
+--     list; failing closed would silently take away the fast travel a player depends on.
+--   * a shrine that becomes known is **said**, once. Discovering one is a real event in this
+--     game and there was nothing in the interface that announced it.
+M.wpUnlocked = nil
+
+--- Ask the server which shrines this save has, because it only volunteers changes.
+---
+--- Called when the client half comes up and again on every level change. Both matter: the client
+--- state is rebuilt on every save load, and a level change is when the whole list is about to be
+--- read for the first time.
+function M.waypointsAsk()
+    local body = soft(Ext.Json.Stringify, { cmd = "waypointsAsk" })
+    if body == nil then return false end
+    return try(function() Ext.Net.PostMessageToServer(M.CHANNEL, body) end).ok
+end
+
+function M.waypointsKnown(ids, fresh)
+    if type(ids) ~= "table" then return end
+    local set = {}
+    for i = 1, #ids do set[tostring(ids[i])] = true end
+    M.wpUnlocked = set
+
+    for i = 1, #(fresh or {}) do
+        local id = tostring(fresh[i])
+        local name = nil
+        local _, wps = placeTables()
+        for j = 1, #(wps or {}) do
+            -- Through M, not the local: wpName is declared below this function, so the name is
+            -- not in scope here - only the field is. The same trap questRecall carries a note
+            -- about further down.
+            if wps[j][1] == id then name = M.wpName(wps[j]) break end
+        end
+        say("Новая точка перехода" .. (name ~= nil and (": " .. name) or ""))
+    end
+end
+
 --- What a fast-travel shrine is called.
 local function wpName(w)
     if w.said ~= nil then return w.said end
@@ -1327,11 +1426,53 @@ local function wpName(w)
 end
 M.wpName = wpName
 
+--- Which cluster of the level a place id belongs to.
+---
+--- The ids are prefixed by the part of the game they were authored for - DEN is the Emerald
+--- Grove and everything inside it, UND the Underdark, GOB the goblin camp, HAG the swamp - and
+--- the same three letters are on the quest ids that happen there. It is the authors' own
+--- grouping of the level, free, and it is the difference between fifty rows read in distance
+--- order and eight groups a person can hold. A shrine carries it one token further along:
+--- WAYP_GOB_Temple is the goblin camp's.
+local function clusterOf(id)
+    if type(id) ~= "string" then return "" end
+    local w = id:match("^WAYP_([%a%d]+)")
+    if w ~= nil then return w end
+    return id:match("^([%a%d]+)_") or id
+end
+M.clusterOf = clusterOf
+
+--- The place list, grouped the way the landmark list is: by what belongs together, groups in
+--- order of their nearest member, nearest first inside a group. Same reasoning, same shape - see
+--- M.landmarkSort - and the same guarantee, that the first thing said is still the nearest.
+function M.placeSort(out)
+    local best = {}
+    for i = 1, #out do
+        local k = out[i].cluster or ""
+        local d = out[i].dist or 0
+        if best[k] == nil or d < best[k] then best[k] = d end
+    end
+    table.sort(out, function(x, y)
+        local kx, ky = x.cluster or "", y.cluster or ""
+        if kx ~= ky then
+            local bx, by = best[kx] or 0, best[ky] or 0
+            if bx ~= by then return bx < by end
+            return kx < ky
+        end
+        return (x.dist or 0) < (y.dist or 0)
+    end)
+    return out
+end
+
 --- The named places of this level, nearest first, with the fast-travel shrines among them.
 ---
 --- Built rather than filtered, for the reason the quest category is: a place is not an entity
 --- and the sweep will never return one. The entries are shaped like scan entries, so the go key,
 --- `describe` and the cursor take them without knowing what they are.
+--- Whether a place has been stood in is deliberately **not** said here. It belongs to one list
+--- and this is not it: at the start of a level fifty rows of fifty-two would carry the same two
+--- words, which is fog rather than information. "Неизведанное" is that question, and it answers
+--- it by being nothing but the places the party has never stood in.
 function M.placeView()
     local rows, wps = placeTables()
     local me = M.me()
@@ -1354,6 +1495,7 @@ function M.placeView()
             local e = { name = placeName(row), kind = nil, dist = d,
                         dir = bearing(dx, dz, yaw), pos = { row.cx, row[4], row.cz },
                         anchor = "p:" .. id, place = true, inside = (d <= 0) or nil,
+                        cluster = clusterOf(id),
                         -- Kept so that refreshing the entry measures it the way it was built.
                         row = row }
             if was == nil then
@@ -1367,22 +1509,47 @@ function M.placeView()
 
     for i = 1, #(wps or {}) do
         local w = wps[i]
-        local e = soft(function() return Ext.Entity.Get(w[3]) end)
-        local p = (e and positionOf(e)) or { w[4], w[5], w[6] }
-        local dx, dz = p[1] - pos[1], p[3] - pos[3]
-        local d = math.sqrt(dx * dx + dz * dz)
-        -- The entity is handed over only from close in, and that is the same rule the quest
-        -- targets follow: with an entity the go key walks straight there, and a shrine three
-        -- hundred metres off is a crossing of the map on one press. Further out it is an
-        -- anchor, which walks in hops the player can hear the end of.
-        local near = (d <= M.QUEST_DIRECT)
-        out[#out + 1] = { name = wpName(w), kind = "точка перехода", dist = d,
-                          dir = bearing(dx, dz, yaw), pos = p, place = true,
-                          entity = near and e or nil, uuid = w[3],
-                          anchor = (not near) and ("w:" .. w[1]) or nil }
+        -- Only the shrines this playthrough has switched on - see M.wpUnlocked. An unknown set
+        -- means "not told yet", and then every shrine is listed the way it always was.
+        local known = (M.wpUnlocked == nil) or (M.wpUnlocked[w[1]] == true)
+        if known then
+            local e = soft(function() return Ext.Entity.Get(w[3]) end)
+            local p = (e and positionOf(e)) or { w[4], w[5], w[6] }
+            local dx, dz = p[1] - pos[1], p[3] - pos[3]
+            local d = math.sqrt(dx * dx + dz * dz)
+            -- The entity is handed over only from close in, and that is the same rule the quest
+            -- targets follow: with an entity the go key walks straight there, and a shrine three
+            -- hundred metres off is a crossing of the map on one press. Further out it is an
+            -- anchor, which walks in hops the player can hear the end of.
+            local near = (d <= M.QUEST_DIRECT)
+            out[#out + 1] = { name = wpName(w), kind = "точка перехода", dist = d,
+                              dir = bearing(dx, dz, yaw), pos = p, place = true,
+                              cluster = clusterOf(w[1]),
+                              entity = near and e or nil, uuid = w[3],
+                              anchor = (not near) and ("w:" .. w[1]) or nil }
+        end
     end
 
-    table.sort(out, function(x, y) return (x.dist or 0) < (y.dist or 0) end)
+    -- Which of these places the story is currently pointing into.
+    --
+    -- The one thing this list could not say was which of fifty names is worth walking to today,
+    -- and the answer was already being computed next door: the quest targets are entities with
+    -- positions, and a place is an outline that a position is either inside or not. So the row
+    -- the player hears is "Оскверненный храм, по заданию, 240 м", and choosing where to go stops
+    -- being a guess between equally anonymous names.
+    --
+    -- Built from the live targets rather than from every marker in the game, which is the same
+    -- rule the landmark list follows: a place tagged for a quest nobody has started is a spoiler
+    -- dressed as help.
+    local targets = soft(function() return M.questView() end)
+    for i = 1, #(targets or {}) do
+        local p = targets[i].pos
+        local row = (p ~= nil) and M.placeAt(p) or nil
+        local e = (row ~= nil) and byId[row[1]] or nil
+        if e ~= nil then e.task = true end
+    end
+
+    M.placeSort(out)
     -- Which of these are on another island. Half the interiors of a level are, and their
     -- distance and bearing on their own are an invitation to walk into a wall.
     M.markCross(out)
@@ -1394,10 +1561,60 @@ end
 --- Only on arriving somewhere named: walking out of a place onto open ground says nothing, and
 --- the last named place is remembered rather than cleared, so pacing across a boundary does not
 --- ring a bell every pass.
+-- Where have we been, kept by the game's own outlines ---------------------------------
+--
+-- The map's fog is not readable - checked properly this time: no component of the client
+-- carries it (the only things called Fog are the volumetric weather ones), the minimap widget
+-- holds nothing but visibility flags, and the whole Osiris corpus never reveals or hides a
+-- square of map. It is a mask the renderer draws, not a fact the world keeps.
+--
+-- But exploring leaves two marks that *are* readable, and Larian use the second one themselves:
+-- the shrines a save has switched on (see M.wpUnlocked), and the subregion outlines a party has
+-- stood inside - which is exactly how the Explorer background counts its own progress, as a
+-- list of key areas and a `_Visited` row for each one entered.
+--
+-- So this is the same bookkeeping, over the same outlines: 268 of them ship with the layer, and
+-- the character's position is known every tick anyway. Every containing place is marked, not
+-- only the smallest - standing in the druids' chambers is standing in the grove, and a list
+-- that says otherwise would send the player back to somewhere they have walked through.
+
+--- The key a place is remembered under. Levelled, because ids repeat across levels.
+local function placeKey(lv, id)
+    return "p:" .. tostring(lv) .. ":" .. tostring(id)
+end
+M.placeKey = placeKey
+
+--- Have we stood in this place before.
+function M.placeSeen(row, lv)
+    if row == nil then return false end
+    local visited = visitedLoad()
+    return visited[placeKey(lv or M.placesLevel, row[1])] == true
+end
+
+--- Mark every place containing this point as visited. Returns how many were new.
+function M.placeMark(pos)
+    local rows, _, lv = placeTables()
+    if rows == nil or pos == nil then return 0 end
+    local visited = visitedLoad()
+    local n = 0
+    for i = 1, #rows do
+        local row = rows[i]
+        local key = placeKey(lv, row[1])
+        if not visited[key] and inPlace(row, pos) then
+            visited[key] = true
+            M.visitedDirty = true
+            n = n + 1
+        end
+    end
+    if n > 0 then visitedSave() end
+    return n
+end
+
 function M.placeTick()
     local me = M.me()
     local pos = me and positionOf(me)
     if pos == nil then return false end
+    soft(function() M.placeMark(pos) end)
     local row = M.placeAt(pos)
     local name = row and placeName(row) or nil
     M.placeNow = name
@@ -1998,7 +2215,14 @@ local function describe(it)
     end
     -- And whether the story wants it. Only ever for a quest the player has actually seen -
     -- see M.questUuids.
-    if it.task then parts[#parts + 1] = "по заданию" end
+    --
+    -- Where the section of the journal is known it is said instead of the generic phrase, and
+    -- not as well as: on a target the two would mean the same thing, and "Основное задание" is
+    -- the whole of what a player is listening for. Everything else - a lever the story happens
+    -- to want, a place holding a target - keeps the short form, because there the row is not a
+    -- quest and naming a section would claim more than is known.
+    if it.catSaid then parts[#parts + 1] = it.catSaid
+    elseif it.task then parts[#parts + 1] = "по заданию" end
     -- A door that leads off this island rather than across a room. Worth saying in the same
     -- breath as the name, because it is the difference between a cupboard and the way in.
     if it.gate then parts[#parts + 1] = "переход" end
@@ -2596,6 +2820,54 @@ function M.walkTick()
     return false
 end
 
+-- What the game asks before a step that cannot be taken back --------------------------
+--
+-- Larian call it a ready check, and it is the one place the game itself admits that something
+-- is about to become unavailable. There are about fifteen in the story and they are, between
+-- them, every point of no return there is - the crossing out of an act, the boat that does not
+-- come back, the last door. The wording is theirs and it is exact: one variant says "возможно,
+-- вы уже не сможете вернуться" and another, for the same crossing when it can still be walked
+-- back, does not. There is also a variant that says the region ahead is hard for a party of
+-- this level, and one at the end of a day that says somebody in camp still wants to talk -
+-- which is the whole of what a player misses by resting on and never listening.
+--
+-- All of that already exists, written and translated. It is simply never heard from here,
+-- because it arrives as a modal box in an interface that is read by eye. So: the server hears
+-- the check being raised and sends the message key, and this turns the key into the game's own
+-- sentence. Nothing is invented and nothing is translated by the layer.
+--
+-- **It never answers.** Reading the question out is the whole job; pressing the button would be
+-- the most expensive mistake this layer could make.
+M.readyPending = nil
+
+--- Say the ready check the game has just raised, in the game's own words.
+function M.readySay(id, key)
+    M.readyPending = id
+    local rd = _G.ReadyData
+    local pad = _G.Pad
+    local h = (rd ~= nil and type(rd.msg) == "table") and rd.msg[key] or nil
+    local text = nil
+    if h ~= nil and pad ~= nil and pad.loca ~= nil then
+        local t = soft(function() return pad.loca(h) end)
+        if type(t) == "string" and t ~= "" and t ~= h then text = t end
+    end
+    if text ~= nil and pad ~= nil and pad.unmarkup ~= nil then
+        text = soft(function() return pad.unmarkup(text) end) or text
+    end
+    if text == nil then
+        -- A key the shipped table does not carry. Still worth a word: the box is on screen and
+        -- the game is waiting, and "something is being asked" beats silence in front of a
+        -- modal that has to be answered before anything else works.
+        _P("[nav] ready check " .. tostring(id) .. ": no text for key " .. tostring(key))
+        say("Игра ждет подтверждения")
+        return nil
+    end
+    -- Named as a question, because out of nowhere the sentence alone sounds like narration -
+    -- and this one is a fork in the road that will not be offered twice.
+    say("Игра спрашивает. " .. text)
+    return text
+end
+
 --- Hear the server say no.
 ---
 --- The server refuses a destination it cannot find standable ground for, and a refusal that
@@ -2617,6 +2889,22 @@ local function onNet(channel, payload)
         -- The story moved, and the server is the only half that hears it move.
         soft(function() M.questStep(tostring(msg.quest), tostring(msg.step)) end)
     end
+    if msg.cmd == "waypoints" then
+        soft(function() M.waypointsKnown(msg.ids, msg.fresh) end)
+    end
+    if msg.cmd == "ready" then
+        soft(function() M.readySay(tostring(msg.id), tostring(msg.msg)) end)
+    end
+    if msg.cmd == "readyDone" then
+        -- Only worth a word when it was refused: passing it means the game is already doing
+        -- the thing, and the thing announces itself.
+        if msg.passed == false then
+            M.readyPending = nil
+            say("Отменено")
+        else
+            M.readyPending = nil
+        end
+    end
     if msg.cmd == "stopped" then
         -- Kept rather than spoken: the player has already heard "Стоп", and will hear this
         -- back only if the character is still moving two seconds later. An empty "how" means
@@ -2637,6 +2925,9 @@ function M.listen()
         onNet(soft(function() return e.Channel end), soft(function() return e.Payload end))
     end)
     _G.A11Y_NAV_CLIENT = id
+    -- Asked once here as well as on every level change: this half is rebuilt by every save load,
+    -- and the server only volunteers the set when it changes.
+    soft(M.waypointsAsk)
     return id ~= nil
 end
 
@@ -3266,6 +3557,22 @@ function M.questStoreSave()
     soft(function() Ext.IO.SaveFile(M.QUEST_FILE, Ext.Json.Stringify(M.questStore)) end)
 end
 
+--- Under which key a quest with this title is already filed, or the title itself.
+---
+--- Two halves fill this store and they know different things. The server hears `QuestUpdate`
+--- and so knows the quest **id**; the journal shows a title and nothing else. Ten pairs of
+--- quests in this game share a title - the origin and companion versions of the same
+--- character's story are both «Воин гитьянки» - so the id is the better key and the title is
+--- all the other half has. Both are allowed, and this is what keeps one quest from being filed
+--- twice: whoever writes second finds the row the first one made.
+function M.storeKey(store, title)
+    if type(store) ~= "table" or type(store.quests) ~= "table" then return title end
+    for key, entry in pairs(store.quests) do
+        if type(entry) == "table" and entry.title == title then return key end
+    end
+    return title
+end
+
 --- Fold whatever the journal is showing into the store. Cheap to call on every pass: it does
 --- nothing until `Pad.journalRefresh` has produced a newer book than the last one folded.
 function M.questFold()
@@ -3283,19 +3590,20 @@ function M.questFold()
     end
 
     local store = M.questStoreLoad()
+    local key = M.storeKey(store, title)
     if #rows == 0 then
         -- Nothing left undone under this quest: it is finished, or the panel is between
         -- states. Either way it stops being somewhere to walk to.
-        if store.quests[title] ~= nil then
-            store.quests[title] = nil
-            if store.last == title then store.last = nil end
+        if store.quests[key] ~= nil then
+            store.quests[key] = nil
+            if store.last == key then store.last = nil end
             M.questStoreSave()
         end
         return
     end
 
-    store.quests[title] = { tasks = rows }
-    store.last = title
+    store.quests[key] = { title = title, tasks = rows }
+    store.last = key
     M.questStoreSave()
 end
 
@@ -3305,14 +3613,18 @@ function M.questRecall()
     local q = store.last and store.quests[store.last]
     if q == nil then
         -- No "last" - any quest will do, and there is normally only one.
-        for title, entry in pairs(store.quests) do
+        for key, entry in pairs(store.quests) do
             q = entry
-            store.last = title
+            store.last = key
             break
         end
     end
     if q == nil or q.tasks == nil or q.tasks[1] == nil then return nil end
-    return { handle = q.tasks[1].handle, text = q.tasks[1].text, title = store.last }
+    -- The title as the entry recorded it. The key may be a quest id, which is not a thing to
+    -- say out loud; entries written before this file kept titles have no title field and the
+    -- key is still the best name there is.
+    return { handle = q.tasks[1].handle, text = q.tasks[1].text,
+             title = q.title or store.last }
 end
 
 --- A quest moved to a new step, told by the server as it happened.
@@ -3355,8 +3667,11 @@ function M.questStep(quest, step)
     local q = qd.q[quest]
     local title = L(q and q[1]) or quest
     local store = M.questStoreLoad()
-    store.quests[title] = { tasks = { { handle = handle, text = L(handle) } } }
-    store.last = title
+    -- Filed under the quest id, which is the one name for it that is unique. A row the journal
+    -- half already made under the title is taken over rather than left to sit beside this one.
+    if quest ~= title and store.quests[title] ~= nil then store.quests[title] = nil end
+    store.quests[quest] = { title = title, tasks = { { handle = handle, text = L(handle) } } }
+    store.last = quest
     M.questStoreSave()
     _P("[nav] quest " .. tostring(quest) .. " -> " .. tostring(step) .. " -> " .. oid)
     return true
@@ -3374,7 +3689,8 @@ function M.questTasks()
     end
     add(M.bookObjective())
     local store = M.questStoreLoad()
-    for title, entry in pairs(store.quests or {}) do
+    for key, entry in pairs(store.quests or {}) do
+        local title = entry.title or key
         for _, t in ipairs(entry.tasks or {}) do
             add({ handle = t.handle, text = t.text, title = title })
         end
@@ -3480,7 +3796,7 @@ function M.questMarks(obj)
     local yaw = yawOf(me)
     local pad = _G.Pad
 
-    local out, off = {}, 0
+    local out, off, offLv = {}, 0, {}
     for i = 3, #row do
         local pts = qd.mk[row[i]]
         if type(pts) == "table" then
@@ -3490,6 +3806,11 @@ function M.questMarks(obj)
                 local ep = e and positionOf(e)
                 if ep == nil then
                     off = off + 1
+                    -- The marker still says which level its object is on, and that is the one
+                    -- fact worth keeping about a target that cannot be measured to. Without it
+                    -- the layer answered "цель не найдена поблизости" for a quest whose object
+                    -- is perfectly well known and simply somewhere else.
+                    if p[1] ~= nil then offLv[p[1]] = (offLv[p[1]] or 0) + 1 end
                 else
                     -- The marker's own label wins over the entity's name. It is what the game
                     -- would print on the map ("Рулевая рубка"), it is curated per objective,
@@ -3519,25 +3840,116 @@ function M.questMarks(obj)
     end
     if #out == 0 then
         if off > 0 then _P("[nav] quest " .. oid .. ": " .. off .. " markers, none in this level") end
-        return nil
+        return nil, offLv
     end
     table.sort(out, function(a, b) return a.dist < b.dist end)
-    return out
+    return out, offLv
 end
 
---- Everything the story is pointing at, as scan entries, nearest first.
+--- The levels a set of dropped markers points at, in words, nearest thing to an answer there is.
+---
+--- Named where the shipped table has a name for the level and left as the raw id where it does
+--- not, because an id is still something a player can repeat back in a bug report, and silence
+--- is not.
+function M.elsewhereSay(offLv)
+    if type(offLv) ~= "table" then return nil end
+    local here = M.myLevel()
+    local names, seen = {}, {}
+    for lv in pairs(offLv) do
+        -- A marker on this very level whose object would not resolve is a different story - it
+        -- has been picked up, killed or never spawned - and calling that "another location"
+        -- would send the player away from the thing they are standing next to.
+        if lv ~= here then
+            local n = M.levelTitle(lv) or lv
+            if not seen[n] then
+                seen[n] = true
+                names[#names + 1] = n
+            end
+        end
+    end
+    if #names == 0 then return nil end
+    table.sort(names)
+    return table.concat(names, ", ")
+end
+
+-- Which of these is the story and which is an errand -----------------------------------
+--
+-- The game has an answer and the layer was not asking for it. Every quest carries a
+-- `CategoryID` - the section of the journal it is filed under - and every category carries the
+-- priority the game sorts its own journal by: MainQuest 10, PersonalStory 9, then the
+-- geographic ones descending to Companions at 1. Fourteen rows, shipped in `M.cat`.
+--
+-- That number is the only ordering of quests the game itself states, so it is the one used
+-- here. Nothing about "important" is invented by the layer, and the name said on the row is the
+-- category's own translated name, which means the player hears the same words the journal
+-- prints without a syllable of Russian being written into the mod.
+
+--- The journal section a quest target belongs to.
+function M.catOf(oid)
+    local qd = _G.QuestData
+    if qd == nil or oid == nil or type(qd.obj) ~= "table" then return nil end
+    local row = qd.obj[oid]
+    local qid = row and row[1]
+    if qid == nil or type(qd.q) ~= "table" then return nil end
+    local q = qd.q[qid]
+    return q and q[2] or nil
+end
+
+--- How high the game itself sorts that section. Unknown sections sort last rather than first.
+function M.catRank(cid)
+    local qd = _G.QuestData
+    if cid == nil or qd == nil or type(qd.cat) ~= "table" then return 0 end
+    local c = qd.cat[cid]
+    return (c ~= nil and c[1]) or 0
+end
+
+--- And what it is called, memoised: the same handful of categories are asked for on every
+--- rebuild of the list.
+M.catNames = nil
+function M.catName(cid)
+    local qd = _G.QuestData
+    if cid == nil or qd == nil or type(qd.cat) ~= "table" then return nil end
+    if M.catNames == nil then M.catNames = {} end
+    local was = M.catNames[cid]
+    if was ~= nil then return was ~= false and was or nil end
+    local c = qd.cat[cid]
+    local pad = _G.Pad
+    local name = false
+    if c ~= nil and c[2] ~= nil and pad ~= nil and pad.loca ~= nil then
+        local t = soft(function() return pad.loca(c[2]) end)
+        if type(t) == "string" and t ~= "" and t ~= c[2] then name = t end
+    end
+    M.catNames[cid] = name
+    return name ~= false and name or nil
+end
+
+--- Everything the story is pointing at, the main line first.
 ---
 --- This is what the "задача" category shows, and it is built rather than filtered. A category
 --- meant to answer "which way do I go" cannot be a filter over the client sweep: the object an
 --- objective names is often not in the sweep at all, and when it is it frequently has no name
 --- for a filter to match. Both were true of the prologue transponder, which is how that lesson
 --- was learnt.
+---
+--- Ordered by the journal's own priority first and by distance second. Distance alone was the
+--- order and it answered the wrong question: with four quests open, the thing the story is
+--- actually waiting on sits behind whichever errand happens to be nearest, and there is no way
+--- to tell them apart by listening. Nothing is hidden by this - every row still says which
+--- section it belongs to, the list is still walked a step at a time, and the quest key says
+--- where the nearest one is when it is not the first.
 function M.questView()
     local out, seen, titles, ntitles = {}, {}, {}, 0
     local tasks = M.questTasks()
+    -- Where the targets are that this level cannot answer for. Kept beside the list rather than
+    -- in it: a row has to be walkable, and a level that is not loaded is not somewhere the go
+    -- key can take anyone. It is said instead - see questGo.
+    local away = {}
     for i = 1, #tasks do
         local t = tasks[i]
-        local marks = soft(function() return M.questMarks(t) end)
+        -- pcall rather than the soft() wrapper, which keeps only the first return value.
+        local ok, marks, offLv = pcall(M.questMarks, t)
+        if not ok then marks, offLv = nil, nil end
+        for lv, n in pairs(offLv or {}) do away[lv] = (away[lv] or 0) + n end
         for j = 1, #(marks or {}) do
             local it = marks[j]
             local id = tostring(it.marker) .. "|" .. tostring(it.entity)
@@ -3545,6 +3957,9 @@ function M.questView()
                 seen[id] = true
                 it.task = t.text
                 it.questTitle = t.title
+                it.cat = M.catOf(it.quest)
+                it.catRank = M.catRank(it.cat)
+                it.catSaid = M.catName(it.cat)
                 if t.title ~= nil and not titles[t.title] then
                     titles[t.title] = true
                     ntitles = ntitles + 1
@@ -3570,7 +3985,13 @@ function M.questView()
         end
     end
 
-    table.sort(out, function(x, y) return (x.dist or 0) < (y.dist or 0) end)
+    M.questAway = away
+
+    table.sort(out, function(x, y)
+        local rx, ry = x.catRank or 0, y.catRank or 0
+        if rx ~= ry then return rx > ry end
+        return (x.dist or 0) < (y.dist or 0)
+    end)
     return out
 end
 
@@ -3580,7 +4001,11 @@ function M.findObjective(radius)
 
     -- The table first. It is exact where the word matching is a hopeful guess, and it reaches
     -- across the whole level where the sweep reaches sixty metres.
-    local marks = soft(function() return M.questMarks(obj) end)
+    local ok, marks, offLv = pcall(M.questMarks, obj)
+    if not ok then marks, offLv = nil, nil end
+    -- Kept apart from the one questView fills: that one is every open task at once, this one is
+    -- the single objective being asked about, and mixing them would make either sentence wrong.
+    M.questAwayOne = offLv
     if marks ~= nil and #marks > 0 then return marks, obj end
 
     if obj.text == nil then return nil, obj end
@@ -3610,7 +4035,9 @@ function M.objectiveSay(withHint)
         M.objectiveTarget = hits[1]
         if withHint then parts[#parts + 1] = "ещё раз — идти" end
     else
-        parts[#parts + 1] = "цель не найдена поблизости"
+        local away = M.elsewhereSay(M.questAwayOne)
+        parts[#parts + 1] = (away ~= nil) and ("цель в другой локации: " .. away)
+                            or "цель не найдена поблизости"
         M.objectiveTarget = nil
     end
     say(table.concat(parts, ". "))
@@ -3801,12 +4228,21 @@ function M.questGo()
 
     local obj = M.objective()
     local parts = {}
+    -- Resolved once, up here, because the section of the journal is worth saying even when
+    -- nothing below finds a place to walk to. Measured on a live save: the main quest of Act 1
+    -- is «Найти способ избавиться от мозгоедских паразитов» and it carries **no marker at all**
+    -- - the game points nowhere on purpose, because the way on is to go and find one of several
+    -- leads. In that state the only useful thing the layer can say is which story this is, and
+    -- it used to be the one thing it left out.
+    local oid = M.objectiveId(obj)
+    local cat = M.catName(M.catOf(oid))
 
     -- The wording is repeated only when it has changed. On the fifth press in a row, the
     -- sentence is not what the player is listening for - the distance is.
     if obj ~= nil and obj.text ~= nil and obj.text ~= M.questText then
         -- Name the quest with the task the first time it is said: out of the journal the task
         -- alone ("Найдите способ извлечь личинку") does not say which story it belongs to.
+        if cat ~= nil then parts[#parts + 1] = cat end
         if obj.quest ~= nil then parts[#parts + 1] = obj.quest end
         parts[#parts + 1] = obj.text
         M.questText = obj.text
@@ -3818,7 +4254,27 @@ function M.questGo()
         parts[#parts + 1] = describe(view[1])
         -- How many others there are, so that "this is not the only one" is audible without
         -- stepping through the list to find out.
-        if #view > 1 then parts[#parts + 1] = "Ещё " .. (#view - 1) end
+        --
+        -- And where the nearest is, when the nearest is not the one just said. The list leads
+        -- with the main story now rather than with whatever happens to be close, which is the
+        -- right answer to "what moves the plot" and the wrong one to "what can I do from here" -
+        -- so both are given, and the second costs one clause.
+        if #view > 1 then
+            local near = view[1]
+            for i = 2, #view do
+                if (view[i].dist or 0) < (near.dist or 0) then near = view[i] end
+            end
+            if near ~= view[1] then
+                parts[#parts + 1] = "Ещё " .. (#view - 1) .. ", ближайшая: " .. near.name ..
+                                    ", " .. dm(near.dist)
+            else
+                parts[#parts + 1] = "Ещё " .. (#view - 1)
+            end
+        end
+        -- And the ones this level cannot show at all. Said after the list rather than instead
+        -- of it: it is not somewhere to walk today, it is which way the story leaves from here.
+        local away = M.elsewhereSay(M.questAway)
+        if away ~= nil then parts[#parts + 1] = "Есть цели в других локациях: " .. away end
         if obj ~= nil and obj.fromSaved and not M.savedWarned then
             M.savedWarned = true
             parts[#parts + 1] = "По памяти, откройте журнал чтобы обновить"
@@ -3846,7 +4302,6 @@ function M.questGo()
     -- correctly and then said "цель не видна поблизости" while the player stood one metre
     -- from an object. Which link broke was not decidable from the transcript, and a second
     -- run of the same fight is expensive: it is a fight.
-    local oid = M.objectiveId(obj)
     local qd = _G.QuestData
     local row = (oid ~= nil and qd ~= nil) and qd.obj[oid] or nil
     M.questFail = { text = obj.text, handle = obj.handle, turns = obj.turns, place = obj.place,
@@ -3855,12 +4310,27 @@ function M.questGo()
     for i = 3, #(row or {}) do M.questFail.markers[i - 2] = row[i] end
     soft(function() A.write("quest_fail", M.questFail) end)
 
+    -- On a failure the wording rule is inverted: the sentence above is skipped when the
+    -- objective has not changed, which is right while there is a distance to report and wrong
+    -- here, where the reason is all there is. So the section is named again - "Основное
+    -- задание. У этой задачи нет точки на карте" is a state a player can act on, and the
+    -- reason alone is not.
+    if #parts == 0 and cat ~= nil then parts[#parts + 1] = cat end
+
     if oid == nil then
         parts[#parts + 1] = "эта задача не найдена в списке заданий игры"
     elseif row == nil or #row < 3 then
         parts[#parts + 1] = "у этой задачи нет точки на карте"
     else
-        parts[#parts + 1] = "цель этой задачи не в этой локации"
+        -- Which location, when the marker says so. This used to end at "not in this one",
+        -- which is true, useless, and indistinguishable from the layer having lost the thread;
+        -- the marker has carried the level name all along.
+        local away = M.elsewhereSay(M.questAway)
+        if away ~= nil then
+            parts[#parts + 1] = "цель этой задачи в другой локации: " .. away
+        else
+            parts[#parts + 1] = "цель этой задачи не в этой локации"
+        end
     end
 
     -- Between quests - which is exactly when a player is most lost - the map's own labels are
@@ -3892,7 +4362,13 @@ function M.questTick()
     M.questAnnounced = text
     if text == nil then return false end
     M.questText = text
-    local parts = { "Задача", text }
+    local parts = { "Задача" }
+    -- Which section of the journal it came from, said at the one moment it is worth a word: a
+    -- new objective has just appeared and the player has no idea whether the story moved or an
+    -- errand did.
+    local cat = M.catName(M.catOf(M.objectiveId(obj)))
+    if cat ~= nil then parts[#parts + 1] = cat end
+    parts[#parts + 1] = text
     if obj.turns then parts[#parts + 1] = obj.turns end
     say(table.concat(parts, ". "))
     return true

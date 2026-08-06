@@ -423,6 +423,19 @@ local function onMessage(channel, payload)
         M.stop(msg.hard == true)
     elseif msg.cmd == "index" then
         M.buildIndex(msg.force == true)
+    elseif msg.cmd == "waypointsAsk" then
+        -- The client half is rebuilt on every save load, and the poll below only speaks when the
+        -- set *changes* - so without this a reloaded client would wait for the next shrine to be
+        -- found before it learnt about the ones already there, and meanwhile list all of them.
+        -- Answered without touching wpSeen: this is a repeat, not news.
+        local set = M.waypointsUnlocked()
+        if set ~= nil then
+            local ids = {}
+            for id in pairs(set) do ids[#ids + 1] = id end
+            table.sort(ids)
+            M.reply({ cmd = "waypoints", ids = ids, fresh = {} })
+            _P("[nav-srv] waypoints on request: " .. #ids)
+        end
     else
         _P("[nav-srv] unknown command: " .. tostring(msg.cmd))
     end
@@ -463,6 +476,146 @@ function M.questListen()
     return ok
 end
 
+-- Which fast-travel points this save has actually found ---------------------------------
+--
+-- The map's fog cannot be read - it is a mask the renderer draws and nothing in the ECS, the
+-- widget tree or the whole Osiris corpus carries it. But the *consequence* of exploring can be
+-- read exactly, and it is in the save rather than in a file of ours: `DB_WaypointUnlocked` is
+-- the game's own record of every shrine the party has switched on, one row per waypoint per
+-- character.
+--
+-- The layer used to list all sixteen shrines of Act 1 from the moment the level loaded,
+-- including the six underground, which is both clutter and a spoiler of the shape of the act.
+-- With this it lists the ones that exist for this playthrough.
+--
+-- Polled rather than hooked. The story unlocks a waypoint through its own procedure, not
+-- through an engine event anyone can subscribe to, so there is nothing to listen for; a read of
+-- a table with a handful of rows every couple of seconds is cheaper than the search for a hook
+-- that may not exist. The client is told only when the set changes.
+M.WP_POLL_MS = 2000
+M.wpAt = 0
+M.wpSeen = nil
+
+--- The set of unlocked waypoint ids, or nil when the table is not there at all.
+---
+--- Read exactly the way the console reads it - `Osi.DB_WaypointUnlocked:Get(nil, nil)` inside
+--- one pcall - rather than through a held reference. The first version kept the function object
+--- in a local and called `db:Get(...)` off it, and that threw "attempt to call a nil value"
+--- every time while the same expression typed at the console answered with six rows. An Osi
+--- function is a proxy resolved per access; holding one across statements is not the same thing
+--- as calling it, and this is not the place to find out why.
+--- `M.wpErr` keeps whatever went wrong last, because this half is silent by design and a poll
+--- that has been failing for an hour looks exactly like a save with two shrines in it.
+M.wpErr = nil
+
+function M.waypointsUnlocked()
+    local ok, rows = pcall(function() return Osi.DB_WaypointUnlocked:Get(nil, nil) end)
+    if not ok then
+        M.wpErr = tostring(rows)
+        return nil
+    end
+    if type(rows) ~= "table" then return nil end
+    M.wpErr = nil
+    local out = {}
+    for i = 1, #rows do
+        local row = rows[i]
+        local id = (type(row) == "table") and row[1] or nil
+        if type(id) == "string" and id ~= "" then out[id] = true end
+    end
+    return out
+end
+
+--- Broadcast the set when it changes, and say which ones are new.
+---
+--- `fresh` is empty on the first pass of a session on purpose: two waypoints found an hour ago
+--- are not news, and announcing the contents of the save at load time is exactly the kind of
+--- noise that makes a layer something to be endured.
+function M.waypointTick()
+    local now = soft(Ext.Utils.MonotonicTime) or 0
+    if (now - (M.wpAt or 0)) < M.WP_POLL_MS then return end
+    M.wpAt = now
+
+    local set = M.waypointsUnlocked()
+    if set == nil then return end
+
+    local ids, fresh, n = {}, {}, 0
+    for id in pairs(set) do
+        n = n + 1
+        ids[#ids + 1] = id
+        if M.wpSeen ~= nil and not M.wpSeen[id] then fresh[#fresh + 1] = id end
+    end
+
+    local changed = (M.wpSeen == nil) or (#fresh > 0)
+    if not changed then
+        local was = 0
+        for _ in pairs(M.wpSeen) do was = was + 1 end
+        changed = (was ~= n)
+    end
+    if not changed then return end
+
+    table.sort(ids)
+    table.sort(fresh)
+    M.wpSeen = set
+    M.reply({ cmd = "waypoints", ids = ids, fresh = fresh })
+    _P("[nav-srv] waypoints unlocked: " .. n .. (#fresh > 0 and (", new " .. table.concat(fresh, ", ")) or ""))
+end
+
+--- Tell the client when the game asks whether the player is ready.
+---
+--- A ready check is the game's own "are you sure", and it is the only warning it gives before a
+--- step that cannot be taken back. The story raises one as
+---
+---     ReadyCheckGlobal("ReadyCheck_EnterNightsongPrison", "Message_ProgressingWorldState", 1, _Char)
+---
+--- - an id, and the key of the message the modal shows. There are about fifteen of them in the
+--- game, and between them they are every point of no return there is: the crossing out of an
+--- act, the boat that does not come back, the last door of the story. Sighted players read that
+--- box. In the controller interface it is one of the easiest things to walk past.
+---
+--- The message key is all that crosses the wire; the client turns it into a sentence through the
+--- shipped table, the same way it does with quests and places. Which also means the layer says
+--- exactly what Larian wrote, in the language the game is being played in, rather than a warning
+--- invented here that would have to be kept true across patches.
+---
+--- **Passed and failed are reported too, and neither is ever answered from here.** Reading the
+--- question out is help; pressing the button for the player is not, and a wrong press here would
+--- be the single most expensive thing this layer could do.
+---
+--- Both are Osiris *calls* rather than events, so the listener is on the call itself. If that
+--- turns out not to be allowed for calls in this build, the log line below is what says so.
+function M.readyListen()
+    if _G.A11Y_READY_OSI ~= nil then
+        _P("[nav-srv] ready-check listener already registered")
+        return true
+    end
+    local ok = false
+
+    local r = try(function()
+        Ext.Osiris.RegisterListener("ReadyCheckGlobal", 4, "after", function(id, message, force, char)
+            M.reply({ cmd = "ready", id = tostring(id), msg = tostring(message) })
+            _P("[nav-srv] ready check " .. tostring(id) .. " -> " .. tostring(message))
+        end)
+    end)
+    if r.ok then ok = true
+    else _P("[nav-srv] ReadyCheckGlobal listener failed: " .. tostring(r.error)) end
+
+    -- What became of it. The check can also be answered by another player in multiplayer, or
+    -- cancelled by the game itself, and either way the modal simply goes away.
+    for _, ev in ipairs({ "ReadyCheckPassed", "ReadyCheckFailed" }) do
+        local q = try(function()
+            Ext.Osiris.RegisterListener(ev, 1, "after", function(id)
+                M.reply({ cmd = "readyDone", id = tostring(id), passed = (ev == "ReadyCheckPassed") })
+                _P("[nav-srv] " .. ev .. " " .. tostring(id))
+            end)
+        end)
+        if q.ok then ok = true
+        else _P("[nav-srv] " .. ev .. " listener failed: " .. tostring(q.error)) end
+    end
+
+    if ok then _G.A11Y_READY_OSI = true end
+    return ok
+end
+
 function M.listen()
     -- A reload leaves the previous listener alive and answering from a dead closure, the
     -- same way input subscriptions do, so the id is kept in a global and dropped first.
@@ -479,8 +632,25 @@ function M.listen()
     end
     _G.A11Y_NAV_NET = id
     M.netId = id
+
+    -- The one thing this half has to do without being asked. Unsubscribed first for the reason
+    -- the net listener is: a reload leaves the previous closure alive, and two of these would
+    -- poll and broadcast twice.
+    if _G.A11Y_WP_TICK ~= nil then
+        soft(function() Ext.Events.Tick:Unsubscribe(_G.A11Y_WP_TICK) end)
+        _G.A11Y_WP_TICK = nil
+    end
+    -- Deliberately not reset: `M.wpSeen` starts nil in a fresh module, which is what makes the
+    -- first broadcast of a session announce nothing.
+    local tick = soft(function()
+        return Ext.Events.Tick:Subscribe(function() soft(M.waypointTick) end)
+    end)
+    if tick ~= nil then _G.A11Y_WP_TICK = tick
+    else _P("[nav-srv] no Tick on the server - waypoints will not be reported") end
+
     _P("[nav-srv] listening on " .. M.CHANNEL .. " (" .. tostring(id) .. ")")
     pcall(M.questListen)
+    pcall(M.readyListen)
     pcall(M.reportCalls)
     return true
 end

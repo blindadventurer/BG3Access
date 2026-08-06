@@ -131,6 +131,30 @@ foreach ($qn in $qdoc.SelectNodes("//node[@id='Quest']")) {
 }
 Write-Host ("  quests {0}, steps {1}" -f $quests.Count, $stepCount)
 
+# The game's own answer to "is this the main story or not".
+#
+# questcategory_prototypes.lsx is fourteen rows: the sections of the journal, each with the
+# priority it is sorted by. MainQuest is 10, PersonalStory 9, then the geographic ones
+# descending to Companions at 1. That number is the only ordering of quests the game itself
+# states, so it is the one the layer sorts targets by - anything else would be a scale invented
+# here. The name is a handle like everything else, which means the layer says the category in
+# the player's own language without a word of it being written into the mod.
+Write-Host "reading questcategory_prototypes.lsx..."
+$cats = @{}            # categoryID -> @{ prio; name }
+$cdoc = Read-Lsx (Join-Path $jdir "questcategory_prototypes.lsx")
+foreach ($cn in $cdoc.SelectNodes("//node[@id='QuestCategory']")) {
+    $c = Get-Attrs $cn
+    $cid = $c["CategoryID"]
+    if ([string]::IsNullOrEmpty($cid)) { continue }
+    $p = 0
+    [void][int]::TryParse([string]$c["SortingPriority"], [ref] $p)
+    $cats[$cid] = [pscustomobject]@{
+        prio = $p
+        name = Clean-Handle $c["Description"]
+    }
+}
+Write-Host ("  categories {0}" -f $cats.Count)
+
 Write-Host "reading objective_prototypes.lsx..."
 $odoc = Read-Lsx (Join-Path $jdir "objective_prototypes.lsx")
 
@@ -211,6 +235,7 @@ W '--'
 W '--   M.obj[objectiveID] = { questID, descHandle, markerID... }'
 W '--   M.mk[markerID]     = { { level, type, uuid, labelHandle }, ... }'
 W '--   M.q[questID]       = { titleHandle, categoryID }'
+W '--   M.cat[categoryID]  = { sortingPriority, nameHandle }  -- the journal own sections'
 W '--   M.oh[descHandle]   = objectiveID   -- built at load: the objective a journal line is'
 if ($WithSteps) {
 W '--   M.steps[questID]   = { { stepID, descHandle, objectiveID }, ... }  -- journal order'
@@ -245,6 +270,13 @@ W ''
 W 'M.q = {'
 foreach ($qid in ($quests.Keys | Sort-Object)) {
     W ('[' + (Q $qid) + ']={' + (Q $quests[$qid].title) + ',' + (Q $quests[$qid].category) + '},')
+}
+W '}'
+W ''
+
+W 'M.cat = {'
+foreach ($cid in ($cats.Keys | Sort-Object)) {
+    W ('[' + (Q $cid) + ']={' + $cats[$cid].prio + ',' + (Q $cats[$cid].name) + '},')
 }
 W '}'
 W ''
