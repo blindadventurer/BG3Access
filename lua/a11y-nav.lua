@@ -98,6 +98,40 @@ M.indexAt = 0
 M.indexMiss = 0
 M.indexAsked = false
 
+--- Which level the character is standing in, as the engine names it.
+function M.myLevel()
+    local me = M.me()
+    if me == nil then return nil end
+    local lv = soft(function() return me.Level.LevelName end)
+    return lv and tostring(lv) or nil
+end
+
+--- Throw the index away when the level changes, and ask for a new one.
+---
+--- Nothing did this, and the cost was the worst bug the layer has had. The index is a file, so
+--- it outlives the save load that takes the player to another region - and every row in it is
+--- then an object somewhere else, offered as a landmark, at a distance computed from
+--- coordinates that mean nothing here. Walking to one is not a walk: the engine drags the
+--- character into the other level and the party stays behind.
+---
+--- Measured on the save where it bit, in Пустошь, against an index built in the prologue the
+--- night before: 41 rows, of which **one** was in this level, four were in other levels, and
+--- thirty-six no longer existed.
+M.levelSeen = nil
+
+function M.levelWatch()
+    local lv = M.myLevel()
+    if lv == nil or lv == M.levelSeen then return false end
+    local was = M.levelSeen
+    M.levelSeen = lv
+    if was == nil then return false end
+    _P("[nav] level " .. tostring(was) .. " -> " .. lv .. ", dropping the index")
+    M.index, M.indexAsked, M.indexMiss = nil, false, 0
+    M.anchors, M.anchorsAt = nil, 0
+    soft(function() M.requestIndex(true) end)
+    return true
+end
+
 local function levelIndex()
     if M.index ~= nil then return M.index end
     M.indexMiss = M.indexMiss + 1
@@ -111,6 +145,21 @@ local function levelIndex()
         end
         return nil
     end
+    -- Whose level is this a list of? A file without the answer is from before the question was
+    -- asked, and those are the ones that dragged a character across a region - so an unmarked
+    -- file is discarded rather than trusted, and a fresh one asked for.
+    local head = src:match("^#level\t([^\r\n]+)")
+    local mine = M.myLevel()
+    if head == nil or (mine ~= nil and head ~= mine) then
+        _P("[nav] level index is for " .. tostring(head) .. ", we are in " .. tostring(mine) ..
+           " - discarded")
+        if not M.indexAsked then
+            M.indexAsked = true
+            soft(function() M.requestIndex(true) end)
+        end
+        return nil
+    end
+
     local by = {}
     local n = 0
     for line in src:gmatch("[^\r\n]+") do
@@ -1653,7 +1702,14 @@ local function onNet(channel, payload)
     if channel ~= M.CHANNEL then return end
     local msg = soft(Ext.Json.Parse, payload)
     if type(msg) ~= "table" then return end
-    if msg.cmd == "refused" then say("Туда не пройти") end
+    if msg.cmd == "refused" then
+        -- Naming the reason, because the two are different problems for the player: a place
+        -- the pathing will not take them is a "go round"; a target in another region is the
+        -- layer offering something it should not have, and the honest answer is to say so.
+        say(msg.why == "level" and "Туда не пройти: это другая локация"
+            or msg.why == "gone" and "Туда не пройти: этого здесь больше нет"
+            or "Туда не пройти")
+    end
     if msg.cmd == "quest" then
         -- The story moved, and the server is the only half that hears it move.
         soft(function() M.questStep(tostring(msg.quest), tostring(msg.step)) end)

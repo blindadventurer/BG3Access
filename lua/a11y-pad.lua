@@ -3683,6 +3683,10 @@ local function readerTick()
         -- The speech bridge carries one line per tick (E6), so second means instead of.
         if not saidTarget then soft(function() nav.cursorTick() end) end
         if M.ticks % 30 == 0 then
+            -- Before anything that reads the world: a level change invalidates the index, and
+            -- an index from the level before is what sends a character through a door they
+            -- never opened.
+            soft(function() nav.levelWatch() end)
             soft(function() nav.combatTick() end)
             -- One objective finishing and the next appearing is the one thing in a quest a
             -- blind player cannot notice at all, and it is exactly when the navigator button

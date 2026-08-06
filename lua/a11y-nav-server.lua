@@ -29,6 +29,39 @@ end
 
 M.last = nil
 
+-- A trail of everything this half ever told a character to do.
+--
+-- Written because a character was dragged across a level and there was nothing afterwards to
+-- say what had done it: the console keeps a few screens, the extender writes no log, and the
+-- one thing that could have answered - which order fired, from where, to where - existed only
+-- as a print that had already scrolled away. A dozen rows on disk turn "sometimes it teleports
+-- me" from a thing to be reasoned about into a thing to be read.
+M.TRAIL_FILE = "A11y/nav_moves.json"
+M.TRAIL_MAX = 40
+M.trailRows = nil
+
+function M.trail(kind, extra)
+    local host = soft(Osi.GetHostCharacter)
+    local row = { kind = kind, at = soft(Ext.Utils.MonotonicTime), host = tostring(host) }
+    if host ~= nil then
+        local x, y, z = Osi.GetPosition(host)
+        if x ~= nil then
+            row.pos = { math.floor(x * 10) / 10, math.floor(y * 10) / 10, math.floor(z * 10) / 10 }
+        end
+    end
+    for k, v in pairs(extra or {}) do row[k] = v end
+
+    if M.trailRows == nil then
+        local raw = soft(function() return Ext.IO.LoadFile(M.TRAIL_FILE) end)
+        local t = (type(raw) == "string" and raw ~= "") and
+                  soft(function() return Ext.Json.Parse(raw) end) or nil
+        M.trailRows = (type(t) == "table" and type(t.rows) == "table") and t.rows or {}
+    end
+    M.trailRows[#M.trailRows + 1] = row
+    while #M.trailRows > M.TRAIL_MAX do table.remove(M.trailRows, 1) end
+    soft(function() Ext.IO.SaveFile(M.TRAIL_FILE, Ext.Json.Stringify({ rows = M.trailRows })) end)
+end
+
 --- Walk the controlled character to a point.
 ---
 --- **The point is validated first, and this is not a nicety.** `CharacterMoveToPosition` does
@@ -49,24 +82,24 @@ M.last = nil
 --- places: a thing standing in the world is on ground the engine can path to and stops at
 --- interaction range by itself. The only coordinates still allowed here are the character's
 --- own, which is how a walk is cancelled.
-function M.moveTo(x, y, z, speed, trusted)
-    local host = soft(Osi.GetHostCharacter)
-    if host == nil then return false, "no host character" end
-    if not trusted then
-        _P("[nav-srv] refused a bare coordinate (" ..
-           string.format("%.1f %.1f %.1f", x or 0, y or 0, z or 0) ..
-           "): moving by position teleports, so only objects are walked to")
-        M.last = { x = x, y = y, z = z, ok = false, err = "coordinates are not walked to" }
-        M.reply({ cmd = "refused", why = "coordinates" })
-        return false, "coordinates are not walked to"
-    end
-    local r = try(function()
-        Osi.CharacterMoveToPosition(host, x, y, z, speed or "Walk", "")
-    end)
-    M.last = { x = x, y = y, z = z, ok = r.ok, err = r.error, trusted = true }
-    _P("[nav-srv] move to " .. string.format("%.1f %.1f %.1f", x, y, z) ..
-       " ok=" .. tostring(r.ok) .. " err=" .. tostring(r.error))
-    return r.ok, r.error
+--- **There is no longer a trusted caller, and that is the fix for a character being dragged.**
+---
+--- `stop` used to end by asking for a move to the character's own position - the one
+--- coordinate that "cannot be wrong". It can. The position is read when the key is pressed and
+--- the placement happens some ticks later, after the queue has been cleared, and in between
+--- the character keeps moving: under a Run order, or under the player's own stick, that gap is
+--- metres. So the placement did not settle the character where it stood, it dragged it back to
+--- where it had been - and a placement moves one character, so the party stays where it was
+--- and the player is suddenly alone. Which is exactly what was reported.
+---
+--- The queue clear is the stop. Nothing else here is allowed to move anybody by coordinates.
+function M.moveTo(x, y, z, speed)
+    _P("[nav-srv] refused a bare coordinate (" ..
+       string.format("%.1f %.1f %.1f", x or 0, y or 0, z or 0) ..
+       "): moving by position places rather than walks, so only objects are walked to")
+    M.last = { x = x, y = y, z = z, ok = false, err = "coordinates are not walked to" }
+    M.reply({ cmd = "refused", why = "coordinates" })
+    return false, "coordinates are not walked to"
 end
 
 --- Tell the client what happened. Refusing quietly is indistinguishable from a layer that has
@@ -88,9 +121,65 @@ end
 --- so a caller that wants the careful pace can still ask for it.
 M.SPEED = "Run"
 
+--- Which level a thing is in, or nil if it will not say.
+---
+--- `Level.LevelName` reads on both halves and on every kind of object that has a place in the
+--- world - measured on the host, on items and on triggers.
+function M.levelOf(uuid)
+    local e = soft(function() return Ext.Entity.Get(uuid) end)
+    if e == nil then return nil end
+    local lv = soft(function() return e.Level.LevelName end)
+    if lv == nil then return nil end
+    return tostring(lv)
+end
+
+--- **The guard that had to exist, and did not.**
+---
+--- `CharacterMoveTo` does not refuse an object in another level. It drags the character there
+--- - and a drag is not a walk, so the party does not follow: they carry on standing in the
+--- level that was left, and the first the player knows of it is a fight taken alone. That is
+--- what happened, and this is the line that stops it happening again whatever else is wrong
+--- upstream.
+---
+--- Measured on the save where it bit: of the 41 things the layer was offering as landmarks,
+--- **one** was in the player's level, four were in other levels, and thirty-six no longer
+--- existed at all. The index had been built in the prologue the night before and nothing ever
+--- threw it away.
+---
+--- Two refusals, and deliberately not a third.
+---
+--- A thing that does not resolve to an entity is not in the world: thirty-six of the forty-one
+--- rows in the file that caused this were of that kind, left over from a level the player had
+--- walked out of hours before. And a thing whose level is known and is not ours is the four
+--- that could actually be reached - by dragging.
+---
+--- What is *not* refused is an entity that exists but will not say which level it is in. It
+--- has never been seen, and refusing on it would mean a layer that stops walking anywhere the
+--- moment some component is missing - which for the person relying on it is worse than the bug
+--- being fixed. It is written to the trail instead, so if it ever happens it is on record.
 function M.moveToObject(uuid, speed)
     local host = soft(Osi.GetHostCharacter)
     if host == nil then return false, "no host character" end
+
+    local target = soft(function() return Ext.Entity.Get(uuid) end)
+    if target == nil then
+        _P("[nav-srv] refused " .. tostring(uuid) .. ": no such thing in the world")
+        M.trail("refused-gone", { uuid = uuid })
+        M.reply({ cmd = "refused", why = "gone" })
+        return false, "not in the world"
+    end
+
+    local mine, theirs = M.levelOf(host), M.levelOf(uuid)
+    if mine ~= nil and theirs ~= nil and mine ~= theirs then
+        _P("[nav-srv] refused " .. tostring(uuid) .. ": level " .. theirs .. " is not " .. mine)
+        M.trail("refused-level", { uuid = uuid, want = theirs, have = mine })
+        M.reply({ cmd = "refused", why = "level", where = theirs })
+        return false, "not in this level"
+    end
+    if theirs == nil then
+        _P("[nav-srv] " .. tostring(uuid) .. " will not say which level it is in - allowing")
+        M.trail("level-unknown", { uuid = uuid, have = mine })
+    end
     -- The queue again (see M.stop): a second walk does not cancel the first, it waits for it.
     -- Pressing "go" three times down a list therefore does not change the destination three
     -- times - it books three journeys, and the character sets off on all of them in turn,
@@ -101,6 +190,21 @@ function M.moveToObject(uuid, speed)
        " err=" .. tostring(r.error))
     return r.ok, r.error
 end
+
+-- **The layer does not teleport anybody. Ever.**
+--
+-- Decided 2026-08-06, by the person playing: the only travel that should move a character
+-- without their legs is the game's own - the waypoint shrines. Everything else walks. A
+-- placement or a teleport is not just a rougher way to arrive: it fires the engine's own
+-- travel events, it skips whatever the ground between here and there was going to trigger,
+-- and the party does not come with it.
+--
+-- So there is exactly one way for this half to move anyone, and it is `Osi.CharacterMoveTo`
+-- to an object in the same level. `CharacterMoveToPosition` is refused for every caller
+-- (M.moveTo), the teleport that used to end a hard stop is gone (M.stop), and a target in
+-- another level is refused before the order is given (M.moveToObject). If a day comes when
+-- somewhere is unreachable on foot, teleporting there becomes its own feature with its own
+-- name and its own warning - not a side effect of the stop key.
 
 --- Drop whatever the character has been told to do.
 ---
@@ -132,26 +236,38 @@ end
 --- So the queue is cleared first and the move-to-self is only what settles the character
 --- afterwards. Which call clears it differs between builds, so every candidate that exists is
 --- used and what was actually available is reported back.
+--- **Rewritten 2026-08-06 after a character was dragged across a level.**
+---
+--- What this used to do last was place the character at the position read when the key was
+--- pressed. That is not settling anybody: the read and the placement are separated by the
+--- queue clear and by ticks, the character keeps moving in between, and the placement drags it
+--- back over that gap. Under a Run order it is metres; on a long walk it is more. And a
+--- placement moves one character - the party carries on standing where it was, which is how a
+--- blind player ends up alone somewhere with the fight still to come.
+---
+--- The queue clear is the stop. `PurgeOsirisQueue(character, 1)` drops the task being carried
+--- out, not merely what is waiting behind it, and that is what makes the character halt.
+---
+--- The hard form keeps the teleport-to-self, because a walk the engine will not drop has to be
+--- broken somehow - but the position is read **immediately before** it now, with nothing in
+--- between, so the window it can drag across is as small as this side can make it. And it
+--- refuses outright rather than guess if the engine will not say where the character is.
 function M.stop(hard)
     local host = soft(Osi.GetHostCharacter)
     if host == nil then return false end
-    local x, y, z = Osi.GetPosition(host)
+    -- Twice on a hard stop, and that is the whole of the difference now. What used to be here
+    -- was a teleport to the character's own position, and it is gone on purpose - see the note
+    -- above about characters walking rather than being placed.
     local used = M.clearQueue(host)
-
-    -- The last resort, and only when asked for twice: placing the character where it already
-    -- stands. This is the one coordinate that cannot be wrong - it is the ground the character
-    -- is standing on this instant - and a placement is not a task, so nothing can queue behind
-    -- it and keep running.
     if hard then
-        local r = try(Osi.TeleportToPosition, host, x, y, z)
-        if not r.ok then r = try(Osi.TeleportToPosition, host, x, y, z, "", 0, 0, 0) end
-        if r.ok then used[#used + 1] = "teleport" end
+        for _, w in ipairs(M.clearQueue(host)) do used[#used + 1] = w .. "2" end
     end
 
-    local ok = M.moveTo(x, y, z, "Walk", true)
-    _P("[nav-srv] stop: " .. (#used > 0 and table.concat(used, "+") or "moveToSelf only"))
-    M.reply({ cmd = "stopped", how = table.concat(used, "+"), hard = hard == true })
-    return ok
+    local how = #used > 0 and table.concat(used, "+") or "nothing available"
+    _P("[nav-srv] stop: " .. how)
+    M.trail("stop", { how = how, hard = hard == true })
+    M.reply({ cmd = "stopped", how = how, hard = hard == true })
+    return #used > 0
 end
 
 -- The index of the level ------------------------------------------------------------------
@@ -232,8 +348,17 @@ function M.buildIndex(force)
         _P("[nav-srv] index: GetAllEntities gave " .. type(all))
         return false
     end
-    M.indexing = { all = all, at = 1, rows = {}, kept = 0, seen = 0 }
-    _P("[nav-srv] index: walking " .. #all .. " entities")
+    -- The level the index is *of*. Without it the file is a list of things that were once
+    -- somewhere, and after a level change every one of them is a place the layer will happily
+    -- send a character to - which drags them out of the world they are standing in.
+    local host = soft(Osi.GetHostCharacter)
+    local level = host and M.levelOf(host) or nil
+    if level == nil then
+        _P("[nav-srv] index: cannot tell which level the host is in - not building one")
+        return false
+    end
+    M.indexing = { all = all, at = 1, rows = {}, kept = 0, seen = 0, level = level, skipped = 0 }
+    _P("[nav-srv] index: walking " .. #all .. " entities of " .. level)
 
     local tick
     tick = Ext.Events.Tick:Subscribe(function()
@@ -251,6 +376,14 @@ function M.buildIndex(force)
                 local tpl = soft(function() return Osi.GetTemplate(u) end)
                 if type(tpl) == "string" then
                     local kind = indexKind(tpl)
+                    -- Only this level. `GetAllEntities` hands back everything the server is
+                    -- holding, which after a few hours of play includes whole regions the
+                    -- player left behind: the file that caused the bug had one row of the
+                    -- level it was read in and forty of somewhere else.
+                    if kind ~= nil and M.levelOf(u) ~= st.level then
+                        kind = nil
+                        st.skipped = st.skipped + 1
+                    end
                     if kind ~= nil then
                         local p = soft(function() return e.Transform.Transform.Translate end)
                         if p ~= nil then
