@@ -3406,6 +3406,80 @@ function M.slotTick(ws)
     return flush()
 end
 
+-- Lines nobody is saying to us -----------------------------------------------------
+--
+-- A companion remarks on something as you walk past it, a guard shouts across a room, somebody
+-- barks in a fight. All of it is subtitled on screen, and none of it was ever read: the
+-- dialogue reader only runs while `Dialogue_c` is up, and none of this is that. For a player
+-- whose game is in English and whose language is not, this is the half of the writing that was
+-- simply missing.
+--
+-- Measured 2026-08-06, and it is not in the tree at all - `OverheadInfo_c` walks 67 nodes and
+-- carries no strings. The line is on the shared data context that every widget hangs off:
+--
+--     CurrentSpeaker            who is talking
+--     CurrentSubtitle           the line itself, already rendered
+--     CurrentSubtitleDuration   how long it will be up
+--
+-- A record rather than a tree, which makes this cheap, exact and language-independent - the
+-- same shape the tutorial bank and the roll panel turned out to have.
+
+M.lastSubtitle = nil
+
+--- The shared data context, taken off whichever widget is nearest.
+---
+--- Every widget hangs off the same one, so the first that answers is as good as any; the test
+--- is that the field is there at all, because a widget with its own local context would answer
+--- with something else entirely.
+local function uiData(ws)
+    for i = 1, #ws do
+        local p = props(ws[i].node)
+        local dc = p ~= nil and p.DataContext or nil
+        if type(dc) == "userdata" then
+            local d = soft(function() return dc:GetAllProperties() end)
+            if type(d) == "table" and d.CurrentSubtitle ~= nil then return d end
+        end
+    end
+    return nil
+end
+M.uiData = uiData
+
+function M.subtitleTick(ws)
+    -- The conversation belongs to the dialogue reader, and this record carries its lines too.
+    -- Reading both would say every line of every dialogue twice.
+    --
+    -- Two tests, not one. The flag is what the dialogue reader last decided; the widget is what
+    -- is on screen now. The box blinks out for a pass on some transitions, and one pass is all
+    -- it takes to say a line the dialogue reader is about to say again.
+    if M.inDialogue then M.lastSubtitle = nil return false end
+    for i = 1, #ws do
+        if ws[i].visible ~= false and str(ws[i].name):find("Dialogue", 1, true) then
+            M.lastSubtitle = nil
+            return false
+        end
+    end
+
+    local d = uiData(ws)
+    if d == nil then return false end
+    local line = str(d.CurrentSubtitle)
+    if line == "" or line == "nil" then
+        M.lastSubtitle = nil
+        return false
+    end
+    if line == M.lastSubtitle then return false end
+    M.lastSubtitle = line
+
+    local who = str(d.CurrentSpeaker)
+    local what = unmarkup(line) or line
+    if who ~= "" and who ~= "nil" then what = who .. ". " .. what end
+    _P("[pad] subtitle: " .. what)
+    -- Behind whatever is being said rather than over it. Somebody talking in the world is news,
+    -- not an answer to a question the player just asked, and cutting off a row readout to
+    -- deliver a passing remark is how the last round of this went wrong.
+    say(what, false)
+    return true
+end
+
 -- Dialogue -------------------------------------------------------------------------
 --
 -- The one thing that has to work for the game to be playable at all, and it turned out to
@@ -4139,6 +4213,10 @@ local function readerTick()
             say("Сохранено", false)
         end
     end
+
+    -- Somebody talking in the world. Not a pass of its own: a remark does not stop the player
+    -- doing what they were doing, so this speaks and lets the rest of the pass run.
+    soft(function() return M.subtitleTick(ws) end)
 
     -- A tutorial modal takes the pass whole, and takes it before the confirmation box does,
     -- because on the pad it is one: it holds the controls until it is answered with A, and
