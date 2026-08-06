@@ -159,6 +159,22 @@ The name of the place is also spoken on its own the moment you walk into one —
 usually needs no key at all; when it does, the place you are in is the first row of
 **локации**, the one that says "вы здесь".
 
+### Places you cannot walk to in a straight line
+
+A level in this game is not one surface. Interiors are built hundreds of metres away from the
+building they belong to — the druids' inner chambers sit eight hundred metres from the grove
+whose door leads to them — so a distance and a bearing to one are correct and useless, and
+walking that way ends in open ground.
+
+The layer now knows every link between the walkable islands of a level: the doors, hatches,
+ladders and rings the game itself uses. A row you cannot reach directly says **"напрямую не
+пройти"**, and a door that leads off the island you are on says **"переход"** — that is how a
+hatch worth crossing the map for is told from a cupboard.
+
+Press **Alt + Home** on one of those and the layer does not walk into the wall: it says how many
+doors are on the way and walks you to the first one instead. Take it, press **Alt + Home**
+again, and repeat until you are there.
+
 **Home** — how the walk is going: how far is left, and whether that number is going down.
 On a panel it goes to the top of the list.
 

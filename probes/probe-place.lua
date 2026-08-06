@@ -19,6 +19,9 @@
 --      areas are too, because both came out of the same level files
 --   4. the ten nearest places, as the player would hear them
 --   5. the landmark list, with the place each row now carries
+--   6. the navigation portals: how many of them really have a door, hatch or ladder standing at
+--      their Source, which is the same measurement as (3) for the other shipped table - and a
+--      route to every place the list says cannot be walked to
 --
 -- Reads only. Nothing here moves the character or touches game state.
 --
@@ -133,6 +136,46 @@ function M.run()
     local groups = 0
     for _ in pairs(r.landmarkPlaces) do groups = groups + 1 end
     P("landmarks: " .. #marks .. " in " .. groups .. " named places")
+
+    -- 6. The portals, and the one thing about them that cannot be checked offline: whether the
+    --    thing standing at a Source is really there. The join is a coordinate, so a portal with
+    --    nothing at it is a door the layer would send somebody to and they would find a wall.
+    local pts = Nav.portalTables()
+    r.portals = #(pts or {})
+    r.region = Nav.regionNow
+    local withObject, gates = 0, {}
+    for i = 1, #(pts or {}) do
+        local row = pts[i]
+        local e = Nav.portalEntry(row)
+        if e ~= nil and e.entity ~= nil then withObject = withObject + 1 end
+        if e ~= nil and e.dist < 120 then
+            gates[#gates + 1] = { name = e.name, dist = e.dist, dir = e.dir,
+                                  named = e.entity ~= nil,
+                                  from = row[7], to = row[8] }
+        end
+    end
+    r.portalsWithObject, r.gatesNear = withObject, gates
+    P("portals: " .. r.portals .. ", with something standing at the source " .. withObject ..
+      ", within 120 m " .. #gates .. "; we are in region " .. tostring(r.region))
+
+    -- And a route to each place the list says cannot be walked to, which is the whole feature.
+    r.routes = {}
+    for i = 1, math.min(#view, 12) do
+        local it = view[i]
+        if it.cross then
+            local route = Nav.routeTo(it.pos)
+            r.routes[#r.routes + 1] = {
+                to = it.name, straight = it.dist,
+                hops = route and route.hops or nil,
+                cost = route and route.cost or nil,
+                entrance = route and (function()
+                    local e = Nav.portalEntry(route.first)
+                    return e and { name = e.name, dist = e.dist, dir = e.dir } or nil
+                end)() or nil,
+            }
+        end
+    end
+    P("places on another island: " .. #r.routes)
     P("wrote A11y/place.json")
 
     soft(Ext.IO.SaveFile, "A11y/place.json", soft(Ext.Json.Stringify, r))

@@ -23,6 +23,7 @@ local DEV = "A11y/"
 local ORDER = {
     { name = "a11y-questdata", global = "QuestData", optional = true },
     { name = "a11y-placedata", global = "PlaceData", optional = true },
+    { name = "a11y-portaldata", global = "PortalData", optional = true },
     { name = "a11y-menu",      global = "A11y"      },
     { name = "a11y-nav",       global = "Nav"       },
     { name = "a11y-pad",       global = "Pad"       },

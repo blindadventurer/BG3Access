@@ -594,6 +594,9 @@ function M.scan(radius, quiet)
         local obj = M.objective and M.objective()
         M.markerLabels = obj and obj.markers or nil
     end
+    -- Which walkable island the character is standing on. One pass over a couple of hundred
+    -- endpoints, and everything that has to decide "can this even be walked to" reads it.
+    M.regionNow = M.regionOf(pos)
     -- Walking past an anchor is what marks it seen, and walking is when the scan is taken.
     -- Only once the anchors exist: building them is a hundred entity lookups and it belongs
     -- to the moment the player asks for the category, not to every step.
@@ -1377,6 +1380,9 @@ function M.placeView()
     end
 
     table.sort(out, function(x, y) return (x.dist or 0) < (y.dist or 0) end)
+    -- Which of these are on another island. Half the interiors of a level are, and their
+    -- distance and bearing on their own are an invitation to walk into a wall.
+    M.markCross(out)
     return out
 end
 
@@ -1457,6 +1463,9 @@ end
 --- now heard together.
 function M.landmarkSort(out)
     local known = M.questUuids()
+    -- A hatch that leads to a cellar and a hatch that leads nowhere are the same word in this
+    -- list, and the first is worth crossing the map for.
+    M.markCross(out)
     local best = {}
     for i = 1, #out do
         local it = out[i]
@@ -1483,6 +1492,311 @@ function M.landmarkSort(out)
         return (x.dist or 0) < (y.dist or 0)
     end)
     return out
+end
+
+-- Getting from one island to another --------------------------------------------------
+--
+-- A level is not one walkable surface, and until now the layer believed it was. Interiors in
+-- this game are built hundreds of metres away from the building they belong to: the druids'
+-- inner chambers of the Emerald Grove sit at -440,-4 while the grove is at 213,476. So the
+-- scanner would measure eight hundred metres to a room on the other side of a door it was
+-- standing next to, and be exactly right and completely useless - and a walk in that bearing
+-- goes into open ground and stops.
+--
+-- `Levels/<lvl>/Ai/navigationPortals.lsf` is the game's own answer. It splits the level into
+-- navigation regions and lists every link between them: a Source you stand at, a Target you
+-- arrive at, and the region on each side. `a11y-portaldata` ships 473 of them across 31 levels.
+--
+-- Two things were measured before any of this was written. **A portal is a real thing you
+-- use**: 121 of the 125 portals of WLD_Main_A have a named object within six metres of their
+-- Source - a door, a hatch, a ladder, the hag's portal, the fairy ring in the swamp. And
+-- **the regions are the geography**: labelling every named place of that level by the region
+-- of its nearest portal endpoint puts the grove, the goblin camp, the forest, the road and the
+-- swamp in one region, the Underdark in another, the hag's lair, Grymforge, the druid chambers
+-- and the temple's three wings in their own. Nothing had to be guessed.
+--
+-- What is *not* reliable is the last step: deciding which region an arbitrary point is in, by
+-- its nearest endpoint. It is right at the centre of every place tried and wrong near the edges
+-- of five of the twenty outlines. So it is never trusted on its own - a route is only ever
+-- offered when it also turns out to be **shorter than walking straight**, which is a fact about
+-- distance rather than about regions and cannot be wrong in a way that costs the player a walk.
+
+M.portals = nil
+M.portalLevel = nil
+M.portalPts = nil
+M.regionMemo = nil      -- entry key -> region, thrown away with the level
+M.gateMemo = nil        -- entry key -> is this thing standing on a portal
+M.regionNow = nil       -- the region the character is in, kept by the scan
+
+-- Further than this from any portal endpoint and the nearest one says nothing about where you
+-- are, so the layer stops claiming to know.
+M.REGION_FAR = 250
+-- How close a thing has to be to a portal's Source to be the thing you use there.
+M.GATE_M = 5
+-- What one door costs, in metres of walking.
+--
+-- Not nothing, which is what it was worth in the first version and what the engine's own cost
+-- table implies. The router walks between endpoints in straight lines, so it always understates
+-- the ground inside a region, and with free doors a chain of six of them beats a chain of one:
+-- from the goblin camp it offered the hag's workshop through six portals and the temple, when
+-- the hag's lair is entered from the swamp. Thirty metres a door is also honest about what a
+-- door costs a player who cannot see - it has to be found and used.
+M.HOP_COST = 30
+-- And how much worse than the straight line a route may be and still be worth taking. Three
+-- times, because being unable to walk there at all is the normal case for an interior and a
+-- door on the far side of the map is still the only way in. Beyond that the route is more
+-- likely to be the region test having gone wrong than a real way round.
+M.ROUTE_MAX = 3
+
+local function portalTables()
+    local pd = _G.PortalData
+    if pd == nil or type(pd.pt) ~= "table" then return nil end
+    local lv = M.myLevel()
+    if lv == nil then return nil end
+    if M.portalLevel ~= lv then
+        M.portalLevel = lv
+        M.portals = pd.pt[lv]
+        M.portalPts = nil
+        M.regionMemo, M.gateMemo, M.regionNow = {}, {}, nil
+        _P("[nav] portals: " .. #(M.portals or {}) .. " in " .. lv)
+    end
+    return M.portals
+end
+M.portalTables = portalTables
+
+--- Both ends of every portal as one list: position, region, which portal, and which end.
+local function portalPoints()
+    if M.portalPts ~= nil then return M.portalPts end
+    local rows = portalTables()
+    if rows == nil then return nil end
+    local out = {}
+    for i = 1, #rows do
+        local r = rows[i]
+        out[#out + 1] = { r[1], r[2], r[3], r[7], i, false }
+        out[#out + 1] = { r[4], r[5], r[6], r[8], i, true }
+    end
+    M.portalPts = out
+    return out
+end
+
+--- Which walkable island a point is in, and how far the endpoint that decided it was.
+---
+--- In three dimensions, because that is what tells a cellar from the room over it - the two
+--- share their footprint and differ only in height.
+function M.regionOf(pos)
+    local pts = portalPoints()
+    if pts == nil or pos == nil then return nil end
+    local best, bd = nil, nil
+    for i = 1, #pts do
+        local p = pts[i]
+        local dx, dy, dz = p[1] - pos[1], p[2] - (pos[2] or p[2]), p[3] - pos[3]
+        local d = dx * dx + dy * dy + dz * dz
+        if bd == nil or d < bd then bd, best = d, p end
+    end
+    if best == nil then return nil end
+    local d = math.sqrt(bd)
+    if d > M.REGION_FAR then return nil, d end
+    return best[4], d
+end
+
+--- The region of a scan entry, remembered per thing rather than per sentence.
+---
+--- The *thing's* region is a fact about the world and keeps; whether it is the player's region
+--- is not, and is asked fresh every time (M.regionNow).
+function M.regionOfEntry(it)
+    if it == nil or it.pos == nil then return nil end
+    local memo = M.regionMemo
+    local key = it.uuid or it.anchor or (it.entity ~= nil and tostring(it.entity)) or nil
+    if memo ~= nil and key ~= nil and memo[key] ~= nil then
+        return memo[key] ~= false and memo[key] or nil
+    end
+    local r = M.regionOf(it.pos)
+    if memo ~= nil and key ~= nil then memo[key] = r or false end
+    return r
+end
+
+--- Is this thing standing on a portal - a door, hatch or ladder that leads off this island.
+function M.gateOf(it)
+    if it == nil or it.pos == nil then return false end
+    local rows = portalTables()
+    if rows == nil then return false end
+    local memo = M.gateMemo
+    local key = it.uuid or it.anchor or (it.entity ~= nil and tostring(it.entity)) or nil
+    if memo ~= nil and key ~= nil and memo[key] ~= nil then return memo[key] end
+    local hit = false
+    for i = 1, #rows do
+        local r = rows[i]
+        local dx, dy, dz = r[1] - it.pos[1], r[2] - (it.pos[2] or r[2]), r[3] - it.pos[3]
+        if (dx * dx + dy * dy + dz * dz) <= (M.GATE_M * M.GATE_M) then hit = true break end
+    end
+    if memo ~= nil and key ~= nil then memo[key] = hit end
+    return hit
+end
+
+--- Mark a built list with what the player's own position makes of it.
+---
+--- Two flags, both meaningless without knowing where the character is standing, which is why
+--- they are set here rather than remembered on the entry: whether the thing is on another
+--- island, and whether it is itself a way off this one.
+function M.markCross(list)
+    local here = M.regionNow
+    for i = 1, #list do
+        local it = list[i]
+        if M.gateOf(it) then it.gate = true end
+        if here ~= nil then
+            local r = M.regionOfEntry(it)
+            if r ~= nil and r ~= here then it.cross = true end
+        end
+    end
+    return list
+end
+
+--- The cheapest way from one point to another, through the doors between the islands.
+---
+--- Dijkstra over the portal endpoints: you may walk between two endpoints of the same region,
+--- you may take a portal for nothing, and the character and the goal join the endpoints of
+--- their own regions. Two hundred and fifty nodes at the worst, and only ever on a keypress.
+---
+--- Returns nil when there is nothing to say - same island, no portals, or a route that does not
+--- beat walking straight, which is the guard that makes a misread region harmless.
+function M.routeTo(goal, from)
+    local rows = portalTables()
+    local pts = portalPoints()
+    if rows == nil or pts == nil or goal == nil then return nil end
+    if from == nil then
+        local me = M.me()
+        from = me and positionOf(me)
+    end
+    if from == nil then return nil end
+
+    local hereR = M.regionOf(from)
+    local goalR = M.regionOf(goal)
+    if hereR == nil or goalR == nil or hereR == goalR then return nil end
+
+    local straight = math.sqrt((goal[1] - from[1]) ^ 2 + (goal[3] - from[3]) ^ 2)
+
+    local n = #pts
+    local dist, done, prev = {}, {}, {}
+    for i = 1, n do
+        local p = pts[i]
+        if p[4] == hereR then
+            dist[i] = math.sqrt((p[1] - from[1]) ^ 2 + (p[2] - from[2]) ^ 2 + (p[3] - from[3]) ^ 2)
+        else
+            dist[i] = math.huge
+        end
+    end
+
+    for _ = 1, n do
+        local at, best = nil, math.huge
+        for i = 1, n do
+            if not done[i] and dist[i] < best then at, best = i, dist[i] end
+        end
+        if at == nil then break end
+        done[at] = true
+        local p = pts[at]
+        -- Through the door: a source endpoint reaches its own target endpoint for the price of
+        -- using it.
+        local twin = p[6] and (at - 1) or (at + 1)
+        if not p[6] and pts[twin] ~= nil and dist[twin] > best + M.HOP_COST then
+            dist[twin], prev[twin] = best + M.HOP_COST, at
+        end
+        -- And along the ground, but only to endpoints of the island we are standing on.
+        for i = 1, n do
+            if not done[i] then
+                local q = pts[i]
+                if q[4] == p[4] then
+                    local d = best + math.sqrt((q[1] - p[1]) ^ 2 + (q[2] - p[2]) ^ 2 +
+                                               (q[3] - p[3]) ^ 2)
+                    if d < dist[i] then dist[i], prev[i] = d, at end
+                end
+            end
+        end
+    end
+
+    -- The last leg: off whichever endpoint of the goal's island is cheapest.
+    local endAt, endCost = nil, math.huge
+    for i = 1, n do
+        local p = pts[i]
+        if p[4] == goalR and dist[i] < math.huge then
+            local c = dist[i] + math.sqrt((p[1] - goal[1]) ^ 2 + (p[3] - goal[3]) ^ 2)
+            if c < endCost then endAt, endCost = i, c end
+        end
+    end
+    if endAt == nil then return nil end
+    -- A route far longer than the straight line is more likely to be the region test having
+    -- gone wrong than a real way round. Note this is not "the route must be shorter": for an
+    -- interior it usually is not, because the straight line is through rock and the door is on
+    -- the other side of the map. Being unable to walk there is the fact; the length is a sanity
+    -- check on it.
+    if endCost > straight * M.ROUTE_MAX then return nil end
+
+    -- Walk the chain back and keep the portals in it.
+    local chain, at = {}, endAt
+    while at ~= nil do
+        local p = pts[at]
+        local from2 = prev[at]
+        if from2 ~= nil and pts[from2][5] == p[5] and p[6] then
+            chain[#chain + 1] = p[5]
+        end
+        at = from2
+    end
+    if #chain == 0 then return nil end
+    -- Back to front: the walk was traced from the goal.
+    local first = chain[#chain]
+    return { first = rows[first], firstIndex = first, hops = #chain, cost = endCost,
+             straight = straight }
+end
+
+--- The thing to walk to at a portal, as a scan entry.
+---
+--- A portal is a coordinate and the layer never walks to coordinates - so what is standing
+--- there is looked up in the world: the level index knows the doors, hatches and ladders by
+--- template, and those are exactly what portals are made of. When nothing is found the entry
+--- falls back to an anchor, which walks in hops like an exploration target.
+function M.portalEntry(row)
+    if row == nil then return nil end
+    local me = M.me()
+    local mp = me and positionOf(me)
+    if mp == nil then return nil end
+    local yaw = yawOf(me)
+    local src = { row[1], row[2], row[3] }
+
+    -- Positions first and the entity only once. The level index holds a few hundred rows and
+    -- `Ext.Entity.Get` is an engine call; asking it for every row of every press was the first
+    -- version of this and it is three hundred lookups to answer one question.
+    local best, bd = nil, nil
+    local function consider(pos, name, entity, uuid)
+        if pos == nil then return end
+        local dx, dy, dz = pos[1] - src[1], (pos[2] or src[2]) - src[2], pos[3] - src[3]
+        local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if d > M.GATE_M then return end
+        if bd == nil or d < bd then
+            bd = d
+            best = { name = name, pos = pos, entity = entity, uuid = uuid }
+        end
+    end
+    local idx = M.levelIndex()
+    if idx ~= nil then
+        for u, r in pairs(idx) do
+            if r.x ~= nil then consider({ r.x, r.y, r.z }, r.kind, nil, u) end
+        end
+    end
+    for i = 1, #M.list do
+        local it = M.list[i]
+        consider(it.pos, it.name, it.entity, nil)
+    end
+    if best ~= nil and best.entity == nil and best.uuid ~= nil then
+        best.entity = soft(Ext.Entity.Get, best.uuid)
+    end
+
+    local pos = best and best.pos or src
+    local dx, dz = pos[1] - mp[1], pos[3] - mp[3]
+    local d = math.sqrt(dx * dx + dz * dz)
+    return { name = (best and best.name or "переход"), kind = best and "переход" or nil,
+             pos = pos, dist = d, dir = bearing(dx, dz, yaw),
+             entity = best and best.entity or nil,
+             anchor = (best == nil or best.entity == nil) and "g:" .. tostring(row[1]) or nil,
+             gate = true }
 end
 
 --- Things standing in the world that a map marker names, nearest first.
@@ -1593,6 +1907,11 @@ local function describe(it)
     -- And whether the story wants it. Only ever for a quest the player has actually seen -
     -- see M.questUuids.
     if it.task then parts[#parts + 1] = "по заданию" end
+    -- A door that leads off this island rather than across a room. Worth saying in the same
+    -- breath as the name, because it is the difference between a cupboard and the way in.
+    if it.gate then parts[#parts + 1] = "переход" end
+    -- And the other side of that: no walk in this bearing arrives, whatever the distance says.
+    if it.cross then parts[#parts + 1] = "напрямую не пройти" end
     if it.inside then
         parts[#parts + 1] = "вы здесь"
     else
@@ -3103,6 +3422,7 @@ function M.questView()
     -- level, and "Передатчик, 110 м" leaves out the one thing that would let a player decide
     -- whether to set off now: which place it is in.
     for i = 1, #out do M.placeOf(out[i]) end
+    M.markCross(out)
 
     -- Name the quest only when there is more than one to tell apart. With a single quest the
     -- title is on every line and adds nothing; with three it is the whole point of the list.
@@ -3216,6 +3536,23 @@ function M.approachEntry(it, parts, note)
 
     local d = it.dist or 0
     local where = it.name .. ", " .. tostring(it.dir) .. ", " .. dm(d)
+
+    -- On another island. The bearing to it is honest and leads nowhere - interiors in this game
+    -- are built hundreds of metres from the door that reaches them - so the walk is aimed at the
+    -- door instead, and the player is told that is what happened. `noRoute` on the entry this
+    -- produces is what stops the redirection from happening again to the door itself.
+    if it.cross and not it.noRoute then
+        local route = soft(function() return M.routeTo(it.pos) end)
+        local door = route and M.portalEntry(route.first) or nil
+        if door ~= nil then
+            door.noRoute = true
+            local bits = it.name .. ": напрямую не пройти"
+            if route.hops > 1 then bits = bits .. ", переходов " .. route.hops end
+            parts[#parts + 1] = bits
+            parts[#parts + 1] = "иду к переходу"
+            return M.approachEntry(door, parts, note)
+        end
+    end
 
     -- Already there. Only for quest entries, because only they know what being there means:
     -- the rest of the scanner has always let the engine no-op a walk of two metres, and
