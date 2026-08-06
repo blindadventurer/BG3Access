@@ -139,7 +139,12 @@ the things standing around you; on a panel it is the lines of the panel.
 doors, items. This is how a room gets built up in your head without sitting through thirty
 barrels first.
 
-One of those kinds is **ориентиры**, and it is the one to reach for when you do not know
+One of those kinds is **неизведанное** — the named places of this level you have never stood
+in, nearest first, and it is how a level gets walked without a map: go to the nearest one,
+listen on the way, go again. It shrinks as you explore, and what is left after the named places
+are gone is the anonymous ground between them ("участок").
+
+Another is **ориентиры**, and it is the one to reach for when you do not know
 where to go. It does not list what is near you — it lists the fixtures of the whole level:
 doors, ladders, consoles, levers, keys. Distance and direction, at any range. That is the
 list that ends a "where is the thing my quest is about" walk in one press instead of forty.
@@ -149,9 +154,24 @@ and rows in the same place are kept together, so a hundred fixtures arrive as ei
 groups instead of one flat run. What the game itself has pointed you at is marked "по
 заданию", and only ever for a quest you have actually seen in your journal.
 
-Another kind is **локации** — the places of the level by name, nearest edge first, with the
-fast-travel shrines among them. "Изумрудная роща, 5 м", "Лагерь гоблинов, точка перехода, на
-два, 240 м". The one you are standing in says "вы здесь". Walking to a place works like
+Another kind is **локации** — the places of the level by name, with **the fast-travel shrines
+you have actually found** among them. They come grouped the way the landmarks do: everything that belongs to the grove
+is heard together, then the forest, then the swamp, each group led by its nearest member, so
+fifty names arrive as eight places rather than one long run. A place the story is currently
+pointing into says **"по заданию"**, which is the shortest answer there is to "where should I
+go today" — "Изумрудная роща, по заданию, 98 м", "Лагерь гоблинов, точка перехода, на два,
+240 м". The one you are standing in says "вы здесь". Whether you have been somewhere before is
+not said here — that is the whole of what **неизведанное** is for, and saying it twice would
+put the same two words on nearly every row of a fresh level.
+
+The shrines are the game's own record, out of the save: the sixteen of Act 1 do not all appear
+at once any more, only the ones this playthrough has switched on — and finding a new one is
+said out loud when it happens ("Новая точка перехода: Заросшие руины"), which nothing in the
+interface announced before.
+
+Names are never hidden. The map's fog cannot be read at all — it is a mask the renderer draws,
+carried by no component, no widget and no line of the game's own scripts — so a list that hid
+what it knows would be taking away the only thing standing in for a map. Walking to a place works like
 walking to anything else: **Alt + Home**, in hops you can hear the end of.
 
 The name of the place is also spoken on its own the moment you walk into one — "Локация:
@@ -241,7 +261,18 @@ category instead.
 - Tutorial hints, with the tag markup taken out.
 - Combat: whose turn it is, what you are aiming at, and what the game says about the move
   under the cursor.
-- The journal objective, and when one finishes and the next appears.
+- The journal objective, and when one finishes and the next appears — **and which section of
+  the journal it belongs to**. "Основное задание" and "Роща друидов" are the game's own words
+  for its own quest categories, and hearing which one a task came from is the difference
+  between moving the story on and running an errand. The list of quest targets leads with the
+  main story for the same reason; it still says where the nearest one is when that is
+  something else.
+- **The question the game asks before a step that cannot be taken back.** Larian call it a
+  ready check, and it is the only warning there is before an act closes behind you: the modal
+  that says "возможно, вы уже не сможете вернуться", the one that warns the region ahead is
+  hard for a party of this level, and the one at the end of a day that says somebody in camp
+  still wants to talk. About fifteen of them carry every point of no return in the game. The
+  layer reads them out, in the game's own words, and **never answers them for you.**
 - Panels the controller interface opens: the character sheet, the inventory, the radial menus,
   the confirmation boxes.
 
