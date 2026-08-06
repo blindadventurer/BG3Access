@@ -1151,6 +1151,9 @@ local function placeTables()
         M.placesLevel = lv
         M.placeMemo = {}
         M.placeNow, M.placeSaid = nil, nil
+        -- What "the camera is near the character" means is a different number in a cave and on
+        -- open ground, so the calibration starts again with the level.
+        M.camNear, M.camSaid = nil, nil
         M.places = pd.sub[lv]
         M.waypoints = pd.wp[lv]
         _P("[nav] places: " .. #(M.places or {}) .. " areas, " ..
@@ -1401,6 +1404,95 @@ function M.placeTick()
     if name == nil or name == M.placeSaid then return false end
     M.placeSaid = name
     say("Локация: " .. name)
+    return true
+end
+
+-- Has the view wandered off ------------------------------------------------------------
+--
+-- Reported by the player: now and then the camera drifts a long way from the character and the
+-- footsteps go quiet with it. Sighted players have the same bug and can at least see it happen;
+-- from here it is silent, and what is lost is the one channel that says the character is moving
+-- at all.
+--
+-- Two things are worth separating. That the game's audio is heard from the camera rather than
+-- from the character is a **guess** - a plausible one, because it would explain the symptom
+-- exactly, and nothing here depends on it. What this does depend on is only that the camera has
+-- a position that can be read, and that is soft-guarded: where it cannot be read the whole
+-- thing is silent.
+--
+-- The threshold calibrates itself, because there is no measured "normal" distance to hard-code
+-- and a number picked out of the air would either never fire or nag. The nearest the camera has
+-- been this level is taken as normal, and only a large multiple of it is worth a word. If the
+-- camera never drifts, this never speaks.
+
+M.CAMERA_FLOOR = 25         -- below this it is not far, whatever the ratio says
+M.CAMERA_MULT = 2.5         -- this many times its own resting distance is a drift
+M.CAMERA_QUIET_MS = 30000   -- and it is said at most this often
+M.camNear = nil
+M.camSaid = nil
+M.camHinted = false
+
+--- The entity the view is hung on, or nil when the build does not put it where this looks.
+function M.cameraEntity()
+    for _, comp in ipairs({ "GameCameraBehavior", "CameraTarget", "Camera" }) do
+        local list = soft(Ext.Entity.GetAllEntitiesWithComponent, comp)
+        if type(list) == "table" then
+            for i = 1, #list do
+                if positionOf(list[i]) ~= nil then return list[i], comp end
+            end
+        end
+    end
+    return nil
+end
+
+--- How far the view is from the character, in metres, or nil if that cannot be read.
+function M.cameraDistance()
+    local e = M.cameraEntity()
+    local cp = e and positionOf(e)
+    local me = M.me()
+    local mp = me and positionOf(me)
+    if cp == nil or mp == nil then return nil end
+    local dx, dy, dz = cp[1] - mp[1], cp[2] - mp[2], cp[3] - mp[3]
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+
+function M.cameraTick()
+    -- A conversation, a cutscene or a fight moves the view on purpose and often a long way -
+    -- onto whoever is speaking, onto whoever is taking their turn. Those are the times the
+    -- camera is *meant* to be off the character, and a warning then is noise about a problem
+    -- that does not exist. The calibration is paused with it, or a fight would teach the layer
+    -- that forty metres is normal.
+    local pad = _G.Pad
+    if pad ~= nil and (pad.inDialogue == true or pad.screenUp == true) then return false end
+    -- The handle straight off the character, not `M.combat()`: that one sweeps the level to
+    -- build the whole roster, it runs in this same pass already, and it answers with a table
+    -- whether or not there is a fight - so testing it for nil would have switched this off
+    -- everywhere instead of only in combat.
+    local me = M.me()
+    if me == nil then return false end
+    if soft(function() return me.CombatParticipant.CombatHandle end) ~= nil then return false end
+
+    local d = M.cameraDistance()
+    if d == nil then return false end
+    if M.camNear == nil or d < M.camNear then M.camNear = d end
+    local limit = math.max(M.CAMERA_FLOOR, (M.camNear or 0) * M.CAMERA_MULT)
+    if d <= limit then
+        M.camSaid = nil
+        return false
+    end
+    local now = soft(Ext.Utils.MonotonicTime) or 0
+    if M.camSaid ~= nil and (now - M.camSaid) < M.CAMERA_QUIET_MS then return false end
+    M.camSaid = now
+    local line = string.format("Камера далеко, %.0f м", d)
+    -- The way back, once. The game's own controller bindings put the camera views on the d-pad
+    -- (front view down, top view up), which is the nearest thing to a reset it has - there is no
+    -- zoom binding on a pad at all. Said the first time only: if it does not work, hearing it
+    -- again every half minute is worse than silence.
+    if not M.camHinted then
+        M.camHinted = true
+        line = line .. ". Крестовина вниз или вверх возвращает вид"
+    end
+    say(line)
     return true
 end
 
@@ -2252,6 +2344,37 @@ M.STOP_MOVED_M2 = 9         -- three metres on from where stop was pressed is "s
 M.stopAt = nil
 M.stopping = nil
 
+-- Is the stick still allowed to stop the character.
+--
+-- **This used to be `M.walking ~= nil`, and that is the bug that cost a player control of their
+-- own character.** `M.walking` is the layer's belief that a walk it ordered is still running,
+-- and it is thrown away in three places while the character keeps going: after sixty seconds
+-- (WALK_GIVEUP_MS - which is exactly the long walk this was reported on), on a false reading of
+-- "stuck", and by `M.stop` itself before the server has confirmed anything. The stick's handler
+-- read that field, so from the moment the layer gave up, pushing the stick did nothing at all -
+-- while the message it had just spoken said "Остановить — стик".
+--
+-- The order given is the thing that matters, not what the layer believes came of it. So the arm
+-- is set when a walk is ordered and cleared only by an arrival or by a stop that was **checked**
+-- against the character's own position. The timeout is a backstop, not a policy: at five minutes
+-- nothing the layer ordered is still under way.
+--
+-- A stop while nothing is queued costs one message and clears an empty queue, so being armed a
+-- little too long is free. Being disarmed too early is not.
+M.walkArmed = nil
+M.ARM_MS = 300000
+
+function M.stopArmed()
+    if M.walking ~= nil then return true end
+    if M.walkArmed == nil then return false end
+    local now = soft(Ext.Utils.MonotonicTime) or 0
+    if (now - M.walkArmed) > M.ARM_MS then
+        M.walkArmed = nil
+        return false
+    end
+    return true
+end
+
 function M.stop()
     local now = soft(Ext.Utils.MonotonicTime) or 0
     local hard = M.stopAt ~= nil and (now - M.stopAt) < M.STOP_AGAIN_MS
@@ -2280,17 +2403,23 @@ function M.stopTick()
     local p = me and positionOf(me)
     if p == nil or s.pos == nil then return false end
     local dx, dz = p[1] - s.pos[1], p[3] - s.pos[3]
-    if (dx * dx + dz * dz) > M.STOP_MOVED_M2 then
-        if M.stopHow == "" then
-            -- The server answered and had nothing to answer with. Worth saying once in plain
-            -- words, because no amount of pressing the key will change it.
-            say("Не останавливается. Сборка без очистки очереди — стоп невозможен")
-        else
-            say("Не останавливается, нажмите ещё раз")
-        end
-        return true
+    if (dx * dx + dz * dz) <= M.STOP_MOVED_M2 then
+        -- It worked, and this is the only place that knows it did. Disarming anywhere else is
+        -- how the stick stopped answering while the character was still running.
+        M.walkArmed = nil
+        return false
     end
-    return false
+    -- Still moving. The arm stays on, which is the whole point: the next push of the stick has
+    -- to reach the server, and under the old rule it could not - `M.stop` had already cleared
+    -- the field the stick was reading.
+    if M.stopHow == "" then
+        -- The server answered and had nothing to answer with. Worth saying once in plain
+        -- words, because no amount of pressing the key will change it.
+        say("Не останавливается. Сборка без очистки очереди — стоп невозможен")
+    else
+        say("Не останавливается, нажмите ещё раз")
+    end
+    return true
 end
 
 -- Did we get there? ------------------------------------------------------------------
@@ -2317,6 +2446,9 @@ function M.walkStarted(uuid, name)
     local now = soft(Ext.Utils.MonotonicTime) or 0
     M.walking = { uuid = uuid, name = name, at = now,
                   lastPos = p, lastMove = now, said = nil }
+    -- Armed from the moment the order goes out, and not disarmed by anything that is only the
+    -- layer changing its mind about the walk. See M.stopArmed.
+    M.walkArmed = now
 
     -- The distance the walk started from, and the best one reached since. Between them they
     -- answer the question the player could not ask before: is this walk making progress, or is
@@ -2403,6 +2535,10 @@ function M.walkTick()
         local d = math.sqrt(dx * dx + dz * dz)
         if d <= M.WALK_ARRIVE then
             M.walking = nil
+            -- Arrived, so there is nothing left to stop. The other two ways out of this
+            -- function - the minute-long giveup and "stuck" - deliberately leave it armed:
+            -- both of them are the layer giving up on a character that may still be running.
+            M.walkArmed = nil
             -- The action is promised only when the thing can actually take one and we are
             -- close enough for the game to offer it; otherwise the distance is said instead,
             -- which is the fact the player needs to decide whether to walk the rest.

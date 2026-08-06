@@ -214,5 +214,108 @@ function W.aim(part, comp)
     return tried
 end
 
-_P("[probe-camera] loaded. PC.find() / PC.dump('Camera') / PC.aim('двер') / PC.gaze()")
+-- How far the view is, and what it is made of ------------------------------------------
+--
+-- A different question from aiming, and the one the player actually reported: the camera drifts
+-- a long way from the character and the footsteps go quiet with it. Before anything can be done
+-- about that, two facts are needed and neither can be had from a file.
+--
+--   1. **What is normal.** The layer warns on a multiple of the nearest distance it has seen,
+--      because nobody has ever measured what the camera's resting distance is. This prints it.
+--   2. **What the camera is made of.** `dump()` above asks a hand-written list of field names,
+--      which finds nothing if the field is called something else. This walks the real type, so
+--      a zoom or a distance is found by whatever name it has.
+--
+-- If a writable distance turns up here, the drift becomes something the layer can undo rather
+-- than only report. If it does not, the answer is the third-party native plugin (Native Camera
+-- Tweaks), and that is the player's decision to take, not ours.
+
+--- Every field of every component on the camera entity, by walking the type rather than guessing.
+function W.fields(comp)
+    local e, found = Nav.cameraEntity and Nav.cameraEntity() or nil, comp
+    if comp ~= nil then
+        local list = soft(Ext.Entity.GetAllEntitiesWithComponent, comp)
+        e = (type(list) == "table") and list[1] or nil
+    end
+    if e == nil then _P("[cam] no camera entity") return nil end
+
+    local names = soft(function() return e:GetAllComponentNames() end) or {}
+    local out = { component = found, components = {}, fields = {} }
+    for i = 1, #names do out.components[#out.components + 1] = tostring(names[i]) end
+
+    -- Three ways in, because which of them a build supports is not documented and the cost of
+    -- trying all three is nothing.
+    local function walk(label, obj)
+        if obj == nil then return end
+        local seen = {}
+        local ser = soft(Ext.Types.Serialize, obj)
+        if type(ser) == "table" then
+            for k, v in pairs(ser) do seen[tostring(k)] = str(v) end
+        end
+        local ok = pcall(function()
+            for k, v in pairs(obj) do seen[tostring(k)] = str(v) end
+        end)
+        local tname = soft(Ext.Types.GetObjectType, obj)
+        if tname ~= nil then
+            local info = soft(Ext.Types.GetTypeInfo, tname)
+            local members = info and soft(function() return info.Members end)
+            if type(members) == "table" then
+                for k in pairs(members) do
+                    if seen[tostring(k)] == nil then
+                        seen[tostring(k)] = str(soft(function() return obj[k] end))
+                    end
+                end
+            end
+        end
+        local n = 0
+        for k, v in pairs(seen) do
+            out.fields[label .. "." .. k] = v
+            n = n + 1
+            _P("[cam] " .. label .. "." .. k .. " = " .. v)
+        end
+        if n == 0 then _P("[cam] " .. label .. ": nothing readable (pairs ok=" .. tostring(ok) .. ")") end
+    end
+
+    for i = 1, #names do
+        local full = tostring(names[i])
+        local short = (full:match("([^:]+)$") or full):gsub("Component$", "")
+        local c = soft(function() return e[short] end)
+        if c ~= nil then walk(short, c) end
+    end
+
+    A.write("cam_fields", out)
+    return out
+end
+
+--- What the distance actually is, sampled over a few seconds of ordinary play.
+---
+--- Run it, then walk about and turn the view. The spread is what a threshold has to live with.
+function W.watch(seconds)
+    local n = math.max(1, math.floor((seconds or 20)))
+    local samples = {}
+    local i = 0
+    local sub
+    sub = Ext.Events.Tick:Subscribe(function()
+        i = i + 1
+        if i % 30 ~= 0 then return end
+        local d = Nav.cameraDistance and Nav.cameraDistance()
+        if d ~= nil then samples[#samples + 1] = d end
+        if #samples >= n then
+            soft(function() Ext.Events.Tick:Unsubscribe(sub) end)
+            local lo, hi, sum = nil, nil, 0
+            for _, v in ipairs(samples) do
+                lo = (lo == nil or v < lo) and v or lo
+                hi = (hi == nil or v > hi) and v or hi
+                sum = sum + v
+            end
+            _P(string.format("[cam] distance over %d samples: min %.1f, mean %.1f, max %.1f",
+                #samples, lo or 0, sum / #samples, hi or 0))
+            A.write("cam_watch", { samples = samples, min = lo, max = hi })
+        end
+    end)
+    _P("[cam] watching the camera distance - walk about for a bit")
+    return true
+end
+
+_P("[probe-camera] loaded. PC.find() / PC.dump('Camera') / PC.fields() / PC.watch(20) / PC.aim('двер')")
 return W

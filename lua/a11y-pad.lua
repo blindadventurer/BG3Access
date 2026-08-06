@@ -202,7 +202,12 @@ local function onAxis(e)
        low:find("camera", 1, true) then return end
 
     local nav = _G.Nav
-    if nav == nil or nav.walking == nil then return end
+    -- `nav.walking` used to be the test here, and it was wrong in the one case that matters:
+    -- the layer drops that field after sixty seconds of walking, on a false reading of "stuck",
+    -- and the moment a stop is sent - so on a long walk the stick went dead exactly when the
+    -- player most wanted it. `stopArmed` answers the question actually being asked, which is
+    -- whether the layer ever ordered a walk that has not been seen to end.
+    if nav == nil or nav.stopArmed == nil or not nav.stopArmed() then return end
     local t = now()
     if M.stopSent ~= nil and (t - M.stopSent) < M.AXIS_QUIET_MS then return end
     M.stopSent = t
@@ -3691,6 +3696,10 @@ local function readerTick()
             -- said. It goes with the level watch because it answers the same question at the
             -- next scale down: not "which region" but "which part of it".
             soft(function() nav.placeTick() end)
+            -- And whether the view has drifted off the character, which takes the footsteps
+            -- with it. Silent unless it has, and silent altogether where the camera's position
+            -- cannot be read.
+            soft(function() nav.cameraTick() end)
             soft(function() nav.combatTick() end)
             -- One objective finishing and the next appearing is the one thing in a quest a
             -- blind player cannot notice at all, and it is exactly when the navigator button

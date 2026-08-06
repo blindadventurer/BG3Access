@@ -199,7 +199,9 @@ in full. Out in the world, the last line again.
 **Alt + Pause** — stop walking.
 
 **The left stick** — also stops walking. Pushing the stick is the reflex, and the layer treats
-it as one: the moment you steer for yourself, it stops steering for you.
+it as one: the moment you steer for yourself, it stops steering for you. It keeps working for as
+long as the character might still be running, including after the layer has given up on a long
+walk and said so — that used to be exactly when it stopped working.
 
 There is deliberately no key that reads out everything around you. Thirty entries of barrels
 and reeds is not a picture of a room; it is a wall you have to sit through, with the one entry
@@ -228,6 +230,11 @@ category instead.
   place to everything else it names, so a landmark three hundred metres off is somewhere rather
   than a bearing. The fast-travel shrines come with it: sixteen of them in Act 1, each with the
   name the game gives it instead of "точка перехода" sixteen times over.
+- **The camera drifting off the character.** BG3 sometimes leaves the view a long way from
+  whoever you are steering, and the sound goes with it — the footsteps fade and there is no
+  way to tell why. The layer measures the distance and says so when it is far out of its own
+  usual range, once, with what to press. It stays quiet in conversations, cutscenes and fights,
+  where the view is meant to be somewhere else.
 - Dice rolls: what is being attempted, the skill, the number to beat and your bonus before
   you throw; what came up and whether it passed after. The outcome waits until the roll is
   actually settled, because until then you can still spend inspiration on it.
