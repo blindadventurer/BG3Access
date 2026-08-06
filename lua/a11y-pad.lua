@@ -741,8 +741,11 @@ local function perform(cmd)
         if nav ~= nil then nav.progress()
         else refreshLines(true) M.cursor = 1 sayLine(0) end
     elseif cmd == "quest" then
-        -- One key for "where does the story want me": the objective, its object, and the walk
-        -- there - and when there is no objective, the nearest map marker (Nav.questGo).
+        -- One key for "where does the story want me". It no longer walks: it puts the scanner
+        -- on the "задача" category with the cursor on the nearest thing the story is asking
+        -- for, and from there the ordinary keys do the rest - Home for how far and whether it
+        -- is closing, the go key to set off, the cursor keys to pick a different quest. One
+        -- press, one list, and choosing between two quests stops needing a key of its own.
         -- On a screen the same key answers the same question about a character rather than a
         -- map: the summary panel, which is what all the choices so far add up to.
         if nav ~= nil then nav.questGo() else perform("summary") end
@@ -2432,7 +2435,17 @@ function M.journalRefresh(widget, force)
 
     M.book = { quests = quests, tasks = tasks or {}, title = selected, at = t }
     local nav = _G.Nav
-    if nav ~= nil then nav.questBook = M.book end
+    if nav ~= nil then
+        nav.questBook = M.book
+        -- Folded here rather than left for the world reader to notice.
+        --
+        -- The panel shows the tasks of the **selected** quest only, so the way the layer comes
+        -- to know about more than one is the player walking the list - and that happens with
+        -- the journal open, which is exactly when the world reader is not running. Waiting for
+        -- it would mean only ever remembering whichever quest was selected when the journal
+        -- closed.
+        if nav.questFold ~= nil then soft(nav.questFold) end
+    end
     _P("[pad] journal: " .. #quests .. " quests, " .. #(tasks or {}) .. " tasks, on '" ..
        tostring(selected) .. "'")
     return M.book

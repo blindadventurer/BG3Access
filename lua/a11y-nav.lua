@@ -528,7 +528,6 @@ function M.scan(radius, quiet)
     if M.objAt == nil or (nowMs - M.objAt) > M.OBJ_MS then
         M.objAt = nowMs
         local obj = M.objective and M.objective()
-        M.questKeys = (obj and obj.text) and M.stems(obj.text) or nil
         M.markerLabels = obj and obj.markers or nil
     end
     -- Walking past an anchor is what marks it seen, and walking is when the scan is taken.
@@ -668,13 +667,10 @@ local function matches(key, it)
         return it.indexed == true or it.kind == "дверь" or isMarkerNamed(it.name)
                or isLandmark(it.name)
     end
-    if key == "quest" then
-        if M.questKeys == nil then return false end
-        for _, k in ipairs(M.questKeys) do
-            if it.name:find(k, 1, true) then return true end
-        end
-        return false
-    end
+    -- "quest" is not here on purpose: it is built in rebuildView from the journal table rather
+    -- than filtered out of the sweep. What used to stand in this place cut the objective
+    -- sentence into stems and matched them against the names of whatever had been scanned,
+    -- which is the guessing the shipped index exists to end.
     if key == "markers" then
         -- The label is the thing's own name, so it matches outright - no stemming needed the
         -- way the objective sentence needs it.
@@ -708,6 +704,11 @@ function M.rebuildView()
     -- metres away and hold nothing the scan would ever return.
     if cat.key == "explore" then
         out = M.exploreView()
+    elseif cat.key == "quest" then
+        -- Built, not filtered - see M.questView. This is also what makes the category work at
+        -- any range: the entries come from UUIDs resolved against the world, so a target on
+        -- the far side of the level is in the list with a real distance on it.
+        out = M.questView()
     elseif cat.key == "landmarks" then
         -- The index first, and the sweep's own landmarks folded in behind it: a door the game
         -- names is worth hearing next to a console it does not, and the index knows nothing
@@ -985,7 +986,7 @@ function M.indexView()
         if r.x ~= nil and r.z ~= nil then
             local dx, dz = r.x - pos[1], r.z - pos[3]
             local dist = math.sqrt(dx * dx + dz * dz)
-            -- The entity is looked up so that walking to it still works: `walkTo` sends a
+            -- The entity is looked up so that walking to it still works: approachEntry sends a
             -- uuid, and the server can reach an object the client cannot see.
             out[#out + 1] = { name = r.kind, kind = nil, dist = dist,
                               dir = bearing(dx, dz, yaw),
@@ -1404,51 +1405,17 @@ function M.goTo(index)
     local i = index or M.cursor
     local it = M.view[i]
     if it == nil then say("Не выбрано") return false end
-    -- The coordinate fallback below sends wherever the thing was when the list was taken, so
-    -- the entry is measured again first. Where a uuid exists it does not matter - the server
-    -- resolves the object's own position - but the check also catches an entry that is gone.
+    -- Measured again first. Where a uuid exists the server resolves the object's own position
+    -- anyway, but the check also catches an entry that is gone - and for the quest entries it
+    -- is what makes the distance in "вы на месте" the distance now rather than the distance
+    -- when the list was taken.
     if not M.refreshEntry(it) then
         M.scan()
         say("Пропало, список обновлён")
         return false
     end
-
-    local uuid = soft(function() return it.entity.Uuid.EntityUuid end)
-    local msg, spoken, going = nil, nil, it.name
-    if type(uuid) == "string" and uuid ~= "" then
-        msg = { cmd = "gotoObject", uuid = uuid }
-        spoken = "Иду: " .. it.name
-    elseif it.anchor ~= nil then
-        -- An exploration anchor is a **direction**, never a destination: it is a region
-        -- trigger hundreds of metres off, and coordinates are not walked to at all (see the
-        -- server). So the step is taken to the furthest *thing* standing that way - an object
-        -- is on real ground, the engine paths to it and stops at reach. Which is also what
-        -- exploring is: go to what you can hear, listen to what came into range, go again.
-        local target, err = M.stepTarget(it)
-        if target == nil then say(err or "В ту сторону не за что зацепиться") return false end
-        going = target.name
-        msg = { cmd = "gotoObject", uuid = target.uuid }
-        spoken = "Иду " .. tostring(it.dir) .. ": " .. target.name .. ", " ..
-                 string.format("%.0f м", target.dist) ..
-                 -- One hop is not the journey: saying what is left to the region is what turns
-                 -- a series of presses into progress the player can hear.
-                 (target.left and (", до участка " .. string.format("%.0f м", target.left)) or "")
-    else
-        say("Туда идти не по чему")
-        return false
-    end
-
-    local body = soft(Ext.Json.Stringify, msg)
-    local r = try(function() Ext.Net.PostMessageToServer(M.CHANNEL, body) end)
-    if not r.ok then
-        _P("[nav] goTo failed: " .. tostring(r.error))
-        say("Не получилось пойти")
-        return false
-    end
     M.cursor = i
-    M.walkStarted(msg.uuid, going)
-    say(spoken)
-    return true
+    return M.approachEntry(it)
 end
 
 -- Stopping, and knowing whether it worked.
@@ -1687,6 +1654,10 @@ local function onNet(channel, payload)
     local msg = soft(Ext.Json.Parse, payload)
     if type(msg) ~= "table" then return end
     if msg.cmd == "refused" then say("Туда не пройти") end
+    if msg.cmd == "quest" then
+        -- The story moved, and the server is the only half that hears it move.
+        soft(function() M.questStep(tostring(msg.quest), tostring(msg.step)) end)
+    end
     if msg.cmd == "stopped" then
         -- Kept rather than spoken: the player has already heard "Стоп", and will hear this
         -- back only if the character is still moving two seconds later. An empty "how" means
@@ -2225,6 +2196,11 @@ function M.objective()
     -- yet, and that is most of the time a player is lost. The journal knows - it is read and
     -- kept by the screen side whenever it is open (Pad.journalRefresh), so the objective
     -- survives the journal being closed.
+    -- Whatever the journal last showed goes into the store before it is asked anything, so
+    -- that a quest the player looked at ten minutes ago is still somewhere the layer can send
+    -- them. Does nothing until the book changes.
+    M.questFold()
+
     if out.text == nil then
         local b = M.bookObjective()
         if b ~= nil then
@@ -2232,7 +2208,6 @@ function M.objective()
             out.quest = b.title
             out.handle = b.handle
             out.fromBook = true
-            M.questRemember(b)
         end
     end
 
@@ -2295,30 +2270,157 @@ end
 -- The handle is what makes this safe to keep. It is the game's own key for the objective, not
 -- a sentence in a language, so a remembered one either still resolves to the same place or is
 -- replaced the instant the journal is read again.
-M.QUEST_LAST_FILE = "A11y/quest_last.json"
-M.questLast = nil
+--- Every quest the layer has seen, and what each was asking for.
+---
+--- One quest is the easy case and it is not the case a player is in for long. The journal hands
+--- over the tasks of the **selected** quest only - they live in the detail panel beside the
+--- list, not under the quest in the tree - so the way to know about more than one is to keep
+--- what each showed while the player walked the list. Hence a store rather than a variable.
+---
+--- Keyed by quest title, holding whatever that quest's panel last showed, because that set
+--- *is* its current objectives: when a quest moves on, its panel shows the new ones and the
+--- whole entry is replaced. Anything else would leave the layer pointing at finished work,
+--- which is worse than pointing at nothing.
+---
+--- `last` is which quest was seen most recently, for the callers that want one answer rather
+--- than a list - questTick and the single-objective wording.
+M.QUEST_FILE = "A11y/quest_state.json"
+M.questStore = nil
+M.questFoldAt = nil
 M.savedWarned = false
 
---- Through `M`, not the local, wherever these are used: both are declared below
+--- Through `M`, not the locals, wherever these are used: they are declared below
 --- `M.objective`, which is where they are called from, so the *name* is not in scope there -
 --- only the field is. The same trap `contentsOf` carries a note about further up; it cost a
 --- live "attempt to call a nil value (global 'questRecall')" here before it was seen.
-function M.questRemember(b)
-    if b == nil or type(b.text) ~= "string" then return end
-    local cur = M.questLast
-    if cur ~= nil and cur.text == b.text and cur.handle == b.handle then return end
-    M.questLast = { handle = b.handle, text = b.text, title = b.title }
-    soft(function() Ext.IO.SaveFile(M.QUEST_LAST_FILE, Ext.Json.Stringify(M.questLast)) end)
+function M.questStoreLoad()
+    if M.questStore ~= nil then return M.questStore end
+    local raw = soft(function() return Ext.IO.LoadFile(M.QUEST_FILE) end)
+    local t = (type(raw) == "string" and raw ~= "") and soft(function() return Ext.Json.Parse(raw) end) or nil
+    if type(t) ~= "table" or type(t.quests) ~= "table" then t = { last = nil, quests = {} } end
+    M.questStore = t
+    return t
 end
 
+function M.questStoreSave()
+    if M.questStore == nil then return end
+    soft(function() Ext.IO.SaveFile(M.QUEST_FILE, Ext.Json.Stringify(M.questStore)) end)
+end
+
+--- Fold whatever the journal is showing into the store. Cheap to call on every pass: it does
+--- nothing until `Pad.journalRefresh` has produced a newer book than the last one folded.
+function M.questFold()
+    local book = M.questBook
+    if type(book) ~= "table" or type(book.tasks) ~= "table" then return end
+    if book.at ~= nil and book.at == M.questFoldAt then return end
+    M.questFoldAt = book.at
+
+    local title = book.title or "Задание"
+    local rows = {}
+    for _, o in ipairs(book.tasks) do
+        if not o.done and type(o.text) == "string" then
+            rows[#rows + 1] = { handle = o.handle, text = o.text }
+        end
+    end
+
+    local store = M.questStoreLoad()
+    if #rows == 0 then
+        -- Nothing left undone under this quest: it is finished, or the panel is between
+        -- states. Either way it stops being somewhere to walk to.
+        if store.quests[title] ~= nil then
+            store.quests[title] = nil
+            if store.last == title then store.last = nil end
+            M.questStoreSave()
+        end
+        return
+    end
+
+    store.quests[title] = { tasks = rows }
+    store.last = title
+    M.questStoreSave()
+end
+
+--- The one task, for the callers that want one: the last quest the journal showed.
 function M.questRecall()
-    if M.questLast ~= nil then return M.questLast end
-    local raw = soft(function() return Ext.IO.LoadFile(M.QUEST_LAST_FILE) end)
-    if type(raw) ~= "string" or raw == "" then return nil end
-    local t = soft(function() return Ext.Json.Parse(raw) end)
-    if type(t) ~= "table" or type(t.text) ~= "string" then return nil end
-    M.questLast = t
-    return t
+    local store = M.questStoreLoad()
+    local q = store.last and store.quests[store.last]
+    if q == nil then
+        -- No "last" - any quest will do, and there is normally only one.
+        for title, entry in pairs(store.quests) do
+            q = entry
+            store.last = title
+            break
+        end
+    end
+    if q == nil or q.tasks == nil or q.tasks[1] == nil then return nil end
+    return { handle = q.tasks[1].handle, text = q.tasks[1].text, title = store.last }
+end
+
+--- A quest moved to a new step, told by the server as it happened.
+---
+--- The journal is a record of what the player has looked at; this is a record of what the game
+--- did. Between them the store is both complete and current: browsing the journal fills in
+--- everything already under way, and this keeps it true afterwards without the player having
+--- to open anything.
+---
+--- A step names its objective, and replacing the quest's whole entry is right rather than
+--- lazy: when a quest advances its earlier objectives are done, and a layer that keeps
+--- offering to walk to finished work is worse than one that offers nothing.
+function M.questStep(quest, step)
+    local qd = _G.QuestData
+    if qd == nil or type(qd.steps) ~= "table" then return false end
+    local rows = qd.steps[quest]
+    if rows == nil then return false end
+
+    local oid = nil
+    for i = 1, #rows do
+        if rows[i][1] == step then oid = rows[i][3] break end
+    end
+    -- A step with no objective of its own is normal - plenty of them only move the story on.
+    -- The quest is left as it was rather than emptied, because "no objective on this step"
+    -- does not mean "nothing to do".
+    if oid == nil then return false end
+
+    local row = qd.obj[oid]
+    local handle = row and row[2]
+    if handle == nil then return false end
+
+    local pad = _G.Pad
+    local function L(h)
+        if h == nil or pad == nil or pad.loca == nil then return nil end
+        local t = soft(function() return pad.loca(h) end)
+        if type(t) == "string" and t ~= "" and t ~= h then return t end
+        return nil
+    end
+
+    local q = qd.q[quest]
+    local title = L(q and q[1]) or quest
+    local store = M.questStoreLoad()
+    store.quests[title] = { tasks = { { handle = handle, text = L(handle) } } }
+    store.last = title
+    M.questStoreSave()
+    _P("[nav] quest " .. tostring(quest) .. " -> " .. tostring(step) .. " -> " .. oid)
+    return true
+end
+
+--- Every task of every quest the layer knows about, live reading first.
+function M.questTasks()
+    local out, seen = {}, {}
+    local function add(t)
+        if type(t) ~= "table" then return end
+        local k = t.handle or t.text
+        if type(k) ~= "string" or seen[k] then return end
+        seen[k] = true
+        out[#out + 1] = t
+    end
+    add(M.bookObjective())
+    local store = M.questStoreLoad()
+    for title, entry in pairs(store.quests or {}) do
+        for _, t in ipairs(entry.tasks or {}) do
+            add({ handle = t.handle, text = t.text, title = title })
+        end
+    end
+    return out
 end
 
 --- Word stems of the objective, for matching against what is standing in the world.
@@ -2398,7 +2500,7 @@ M.objectiveId = objectiveId
 
 --- Where the current objective points, as scan entries.
 ---
---- Shaped exactly like what `M.scan` returns, so `describe` and `walkTo` take them without
+--- Shaped exactly like what `M.scan` returns, so `describe` and `approachEntry` take them without
 --- knowing where they came from. `anchor` is set because that is the field `describe` reads
 --- to decide whether a direction is worth saying, and for something across the level it is
 --- the only part that matters.
@@ -2464,6 +2566,49 @@ function M.questMarks(obj)
     return out
 end
 
+--- Everything the story is pointing at, as scan entries, nearest first.
+---
+--- This is what the "задача" category shows, and it is built rather than filtered. A category
+--- meant to answer "which way do I go" cannot be a filter over the client sweep: the object an
+--- objective names is often not in the sweep at all, and when it is it frequently has no name
+--- for a filter to match. Both were true of the prologue transponder, which is how that lesson
+--- was learnt.
+function M.questView()
+    local out, seen, titles, ntitles = {}, {}, {}, 0
+    local tasks = M.questTasks()
+    for i = 1, #tasks do
+        local t = tasks[i]
+        local marks = soft(function() return M.questMarks(t) end)
+        for j = 1, #(marks or {}) do
+            local it = marks[j]
+            local id = tostring(it.marker) .. "|" .. tostring(it.entity)
+            if not seen[id] then
+                seen[id] = true
+                it.task = t.text
+                it.questTitle = t.title
+                if t.title ~= nil and not titles[t.title] then
+                    titles[t.title] = true
+                    ntitles = ntitles + 1
+                end
+                out[#out + 1] = it
+            end
+        end
+    end
+
+    -- Name the quest only when there is more than one to tell apart. With a single quest the
+    -- title is on every line and adds nothing; with three it is the whole point of the list.
+    if ntitles > 1 then
+        for i = 1, #out do
+            if out[i].questTitle ~= nil then
+                out[i].name = out[i].questTitle .. ": " .. out[i].name
+            end
+        end
+    end
+
+    table.sort(out, function(x, y) return (x.dist or 0) < (y.dist or 0) end)
+    return out
+end
+
 function M.findObjective(radius)
     local obj = M.objective()
     if obj == nil then return nil, obj end
@@ -2507,19 +2652,6 @@ function M.objectiveSay(withHint)
     return hits, obj
 end
 
---- Ask the server to walk the character to a scan entry.
----
---- To the object where there is a uuid, so the engine stops at interaction range instead of
---- trying to stand inside the thing; to bare coordinates otherwise.
---- Objects only. A thing without a uuid is a thing the layer cannot send anyone to: moving by
---- coordinates does not walk, it places, and the place may be the sea (see the server half).
-local function walkTo(it)
-    local uuid = soft(function() return it.entity.Uuid.EntityUuid end)
-    if type(uuid) ~= "string" or uuid == "" then return false end
-    local body = soft(Ext.Json.Stringify, { cmd = "gotoObject", uuid = uuid })
-    return try(function() Ext.Net.PostMessageToServer(M.CHANNEL, body) end).ok
-end
-M.walkTo = walkTo
 
 -- The objective, as a place to go rather than a sentence to hear.
 --
@@ -2550,107 +2682,42 @@ M.questText = nil
 
 local function dm(d) return string.format("%.0f м", d or 0) end
 
-function M.questGo()
-    local hits, obj = M.findObjective(80)
-    if obj == nil then say("Задача не видна") return false end
-
-    local parts = {}
-    -- The wording is repeated only when it has changed. On the fifth press in a row, the
-    -- sentence is not what the player is listening for - the distance is.
-    if obj.text ~= nil and obj.text ~= M.questText then
-        -- Name the quest with the task the first time it is said: out of the journal the task
-        -- alone ("Найдите способ извлечь личинку") does not say which story it belongs to.
-        if obj.quest ~= nil then parts[#parts + 1] = obj.quest end
-        parts[#parts + 1] = obj.text
-        M.questText = obj.text
-    end
-
-    -- Said once a session, last in the sentence, and through the single exit below.
-    --
-    -- Not inside the block above: that one only runs when the wording changed, and questTick
-    -- announces a new task on its own the moment it appears - which sets questText, so the
-    -- first press after it skipped the caveat entirely. Not at the front either, which is
-    -- where it landed when it was a plain part: with the wording unchanged every other part
-    -- was still empty, and the player heard the disclaimer before the thing it qualifies.
-    local caveat = nil
-    if obj.fromSaved and not M.savedWarned then
-        M.savedWarned = true
-        caveat = "По памяти, откройте журнал чтобы обновить"
-    end
-    local function speak()
-        if caveat ~= nil then parts[#parts + 1] = caveat end
+--- Walk to one entry, and say the one thing that matters about the attempt.
+---
+--- Every key that sends the character somewhere comes through here: the scanner's own "go"
+--- and the quest key both. That is the point of it. The two used to be separate pieces of
+--- code, and the quest one had grown three things the scanner's had not - a ceiling on how
+--- far one press may walk, what arriving at an area means as opposed to arriving at an
+--- object, and re-measuring the entry first. With the quest targets now in the scanner's own
+--- list, the scanner's key reaches exactly the same entries, so either both know those three
+--- things or the player finds out which key they pressed by what goes wrong.
+---
+--- `note` is said last, after everything else, for the callers with a caveat to attach.
+function M.approachEntry(it, parts, note)
+    parts = parts or {}
+    local function speak(ok)
+        if note ~= nil then parts[#parts + 1] = note end
         say(table.concat(parts, ". "))
+        return ok
     end
-    if obj.turns then parts[#parts + 1] = obj.turns end
-
-    local it = hits and hits[1] or nil
-
-    -- No objective object, or no objective at all: fall back to the map markers. Between
-    -- quests - which is exactly when a player is most lost - the marker labels are the only
-    -- thing the game still says about where the story lies, and the nearest of them is a
-    -- better answer than "nothing found".
     if it == nil then
-        local mhits = M.markerHits()
-        if mhits ~= nil and #mhits > 0 then
-            it = mhits[1]
-            parts[#parts + 1] = "метка"
-        end
+        parts[#parts + 1] = "Не выбрано"
+        return speak(false)
     end
-
-    if it == nil then
-        M.questTarget = nil
-        -- Why it failed, and not only that it did. There are three different failures behind
-        -- the one sentence this used to say, and they want three different things from the
-        -- player: an objective with no text at all cannot be matched against anything; an
-        -- objective whose words are all too short leaves nothing to match with; and a real
-        -- search that came back empty means the thing is out of range or not loaded.
-        --
-        -- This was written after a timed fight on the nautiloid where the layer counted the
-        -- turns down correctly - "Осталось ходов: 13" - and then said "цель не видна
-        -- поблизости" while the player stood one metre from an object. Which of the three
-        -- links broke was not decidable from the transcript, and a second run of the same
-        -- fight is expensive: it is a fight.
-        M.questFail = { text = obj.text, turns = obj.turns, place = obj.place,
-                        markers = obj.markers, keys = obj.text and M.stems(obj.text) or {},
-                        near = {} }
-        local list = M.scan(80)
-        for i = 1, math.min(#(list or {}), 24) do
-            M.questFail.near[i] = list[i].name .. " " .. string.format("%.0f", list[i].dist or 0)
-        end
-        soft(function() A.write("quest_fail", M.questFail) end)
-
-        if obj.markers ~= nil and #obj.markers > 0 then
-            -- The label is on the map but nothing near carries that name: still worth saying,
-            -- because it names the direction the story runs even when the thing is far.
-            parts[#parts + 1] = "метки: " .. table.concat(obj.markers, ", ") .. ", рядом не найдено"
-        elseif obj.text == nil and obj.place ~= nil then
-            parts[#parts + 1] = "Задачи нет. " .. obj.place
-        elseif obj.text == nil then
-            -- Nothing was searched for, because there was nothing to search for. Said plainly:
-            -- "not visible nearby" invites the player to walk around looking, and there is
-            -- nothing to find.
-            parts[#parts + 1] = "у задачи нет текста, искать нечего"
-        elseif #M.questFail.keys == 0 then
-            parts[#parts + 1] = "в задаче нет длинных слов для поиска"
-        else
-            parts[#parts + 1] = "ничего с таким именем в 80 метрах"
-        end
-        speak()
-        return false
-    end
-    M.questTarget = it
 
     local d = it.dist or 0
-    if d <= M.ARRIVE then
-        -- Arrival is the point where the layer runs out of moves: BG3 has no Osiris call for
-        -- using a thing (CharacterUseItem, UseObject, Activate - none of them exist), so the
-        -- action stays on the player's button. Saying so plainly beats walking on the spot.
-        parts[#parts + 1] = it.name .. ", " .. tostring(it.dir) .. ", " .. dm(d)
+    local where = it.name .. ", " .. tostring(it.dir) .. ", " .. dm(d)
+
+    -- Already there. Only for quest entries, because only they know what being there means:
+    -- the rest of the scanner has always let the engine no-op a walk of two metres, and
+    -- changing that would change every category at once for no reason anyone asked for.
+    if it.quest ~= nil and d <= M.ARRIVE then
+        parts[#parts + 1] = where
         if it.mkind == "Trigger" then
-            -- Standing in the area the map pointed at is not finishing anything, and this is
-            -- the moment a player is most likely to think it was: the walk ended, the layer
-            -- fell silent, and there is no button to press. So say what the place is, and
-            -- hand over the only thing that helps next - what is actually usable around here.
+            -- Standing in the area the map pointed at finishes nothing, and this is the
+            -- moment a player is most likely to think it did: the walk ended, the layer went
+            -- quiet, and there is no button to press. So name what the place is, and hand
+            -- over the only thing that helps next - what is actually usable around here.
             parts[#parts + 1] = "Вы в этой точке. Это область на карте, нажимать здесь нечего"
             local near = M.scan(20, true)
             local best = nil
@@ -2667,57 +2734,165 @@ function M.questGo()
         else
             parts[#parts + 1] = "Вы на месте"
         end
-        speak()
-        return true
+        return speak(true)
     end
 
     -- Beyond this a quest target is a direction, not a destination.
     --
-    -- The journal table changed what this button can see: it used to find things inside the
-    -- eighty-metre sweep, and now it hands back the exact object an objective names wherever
-    -- it is on the level - four hundred metres away, through a fight nobody has heard yet.
-    -- `Osi.CharacterMoveTo` would accept that and set off, and a blind player would be
-    -- crossing the map on one keypress with no idea what is on the way.
-    --
-    -- So far targets go through the hop machinery that exploration already uses: walk to the
-    -- furthest thing standing in that direction, say what it was and how much is left. Each
-    -- press is then a bounded move the player can hear the end of, and the direction is still
-    -- exact - which is the part that was missing before.
-    if it.quest ~= nil and d > M.QUEST_DIRECT then
-        local where = it.name .. ", " .. tostring(it.dir) .. ", " .. dm(d)
+    -- The journal table changed what one press can reach: it hands back the exact object an
+    -- objective names wherever it is on the level - four hundred metres away, through a fight
+    -- nobody has heard yet. `Osi.CharacterMoveTo` would accept that and set off, and a blind
+    -- player would be crossing the map on one keypress with no idea what is on the way. So
+    -- far targets go through the hop machinery exploration already uses: walk to the furthest
+    -- thing standing that way, say what it was and how much is left. Each press is then a
+    -- bounded move whose end can be heard, and the direction is still exact.
+    local far = (it.quest ~= nil and d > M.QUEST_DIRECT)
+    local uuid = soft(function() return it.entity.Uuid.EntityUuid end)
+    local msg, going, tail = nil, it.name, nil
+
+    if far or type(uuid) ~= "string" or uuid == "" then
+        -- An exploration anchor is a **direction**, never a destination: it is a region
+        -- trigger hundreds of metres off, and coordinates are not walked to at all (see the
+        -- server). So the step is taken to the furthest *thing* standing that way - an object
+        -- is on real ground, the engine paths to it and stops at reach. Which is also what
+        -- exploring is: go to what you can hear, listen to what came into range, go again.
+        if it.anchor == nil then
+            parts[#parts + 1] = "Туда идти не по чему"
+            return speak(false)
+        end
         local target, err = M.stepTarget(it)
         if target == nil then
-            parts[#parts + 1] = where
-            parts[#parts + 1] = err or "в ту сторону не за что зацепиться"
-            speak()
-            return false
+            if far then parts[#parts + 1] = where end
+            parts[#parts + 1] = err or "В ту сторону не за что зацепиться"
+            return speak(false)
         end
-        local body = soft(Ext.Json.Stringify, { cmd = "gotoObject", uuid = target.uuid })
-        if not try(function() Ext.Net.PostMessageToServer(M.CHANNEL, body) end).ok then
-            parts[#parts + 1] = where
-            parts[#parts + 1] = "не получилось пойти"
-            speak()
-            return false
+        going = target.name
+        msg = { cmd = "gotoObject", uuid = target.uuid }
+        if far then
+            tail = where .. ". Иду в ту сторону: " .. target.name .. ", " .. dm(target.dist)
+        else
+            tail = "Иду " .. tostring(it.dir) .. ": " .. target.name .. ", " .. dm(target.dist) ..
+                   -- One hop is not the journey: saying what is left to the region is what
+                   -- turns a series of presses into progress the player can hear.
+                   (target.left and (", до участка " .. dm(target.left)) or "")
         end
-        M.walkStarted(target.uuid, target.name)
-        parts[#parts + 1] = where
-        parts[#parts + 1] = "иду в ту сторону: " .. target.name .. ", " .. dm(target.dist)
-        speak()
+    else
+        msg = { cmd = "gotoObject", uuid = uuid }
+        tail = "Иду: " .. it.name .. ", " .. dm(d) .. ", " .. tostring(it.dir)
+    end
+
+    local body = soft(Ext.Json.Stringify, msg)
+    local r = try(function() Ext.Net.PostMessageToServer(M.CHANNEL, body) end)
+    if not r.ok then
+        _P("[nav] approach failed: " .. tostring(r.error))
+        parts[#parts + 1] = "Не получилось пойти"
+        return speak(false)
+    end
+    M.walkStarted(msg.uuid, going)
+    parts[#parts + 1] = tail
+    return speak(true)
+end
+
+
+function M.questGo()
+    -- Not a second way to walk. A way to *choose*.
+    --
+    -- This used to resolve the objective and set off, which was the only thing it could do
+    -- while the quest targets lived nowhere but inside it. Now they are entries in the
+    -- scanner's own "задача" category, and everything the scanner already knows how to do
+    -- applies to them: Home says how far and whether it is getting closer, Alt+Home walks,
+    -- the cursor keys step between targets. So this key does the one thing none of those can:
+    -- it puts the player on that list, at the nearest thing the story is asking for.
+    --
+    -- Which is also the answer to more than one quest at a time. There is no longer a single
+    -- "the objective" to walk to - there is a list, sorted by distance, and choosing from it
+    -- is the player's business rather than a rule invented here.
+    if M.stale() then M.scan() end
+
+    local want = nil
+    for i = 1, #M.CATEGORIES do
+        if M.CATEGORIES[i].key == "quest" then want = i break end
+    end
+    local was = M.category
+    M.category = want or was
+    local view = M.rebuildView()
+
+    local obj = M.objective()
+    local parts = {}
+
+    -- The wording is repeated only when it has changed. On the fifth press in a row, the
+    -- sentence is not what the player is listening for - the distance is.
+    if obj ~= nil and obj.text ~= nil and obj.text ~= M.questText then
+        -- Name the quest with the task the first time it is said: out of the journal the task
+        -- alone ("Найдите способ извлечь личинку") does not say which story it belongs to.
+        if obj.quest ~= nil then parts[#parts + 1] = obj.quest end
+        parts[#parts + 1] = obj.text
+        M.questText = obj.text
+    end
+    if obj ~= nil and obj.turns then parts[#parts + 1] = obj.turns end
+
+    if #view > 0 then
+        M.cursor = 1
+        parts[#parts + 1] = describe(view[1])
+        -- How many others there are, so that "this is not the only one" is audible without
+        -- stepping through the list to find out.
+        if #view > 1 then parts[#parts + 1] = "Ещё " .. (#view - 1) end
+        if obj ~= nil and obj.fromSaved and not M.savedWarned then
+            M.savedWarned = true
+            parts[#parts + 1] = "По памяти, откройте журнал чтобы обновить"
+        end
+        say(table.concat(parts, ". "))
         return true
     end
 
-    if not walkTo(it) then
-        parts[#parts + 1] = "не получилось пойти"
-        speak()
+    -- Nothing to point at. Do not strand the player in an empty category.
+    M.category = was
+    M.rebuildView()
+
+    if obj == nil then
+        say("Задача не видна")
         return false
     end
-    M.walkStarted(soft(function() return it.entity.Uuid.EntityUuid end), it.name)
-    parts[#parts + 1] = "иду: " .. it.name .. ", " .. dm(d) .. ", " .. tostring(it.dir)
-    speak()
-    return true
+
+    -- Why it failed, and not only that it did. There are three different failures behind the
+    -- one sentence this used to say, and they want three different things from the player: an
+    -- objective the shipped table does not know; an objective it knows that has no marker at
+    -- all - roughly half of them, and those are the "talk to somebody" kind; and a marker
+    -- whose object is not in this level.
+    --
+    -- Written after a timed fight on the nautiloid where the layer counted the turns down
+    -- correctly and then said "цель не видна поблизости" while the player stood one metre
+    -- from an object. Which link broke was not decidable from the transcript, and a second
+    -- run of the same fight is expensive: it is a fight.
+    local oid = M.objectiveId(obj)
+    local qd = _G.QuestData
+    local row = (oid ~= nil and qd ~= nil) and qd.obj[oid] or nil
+    M.questFail = { text = obj.text, handle = obj.handle, turns = obj.turns, place = obj.place,
+                    objective = oid, markers = {}, fromSaved = obj.fromSaved,
+                    tasks = #M.questTasks() }
+    for i = 3, #(row or {}) do M.questFail.markers[i - 2] = row[i] end
+    soft(function() A.write("quest_fail", M.questFail) end)
+
+    if oid == nil then
+        parts[#parts + 1] = "эта задача не найдена в списке заданий игры"
+    elseif row == nil or #row < 3 then
+        parts[#parts + 1] = "у этой задачи нет точки на карте"
+    else
+        parts[#parts + 1] = "цель этой задачи не в этой локации"
+    end
+
+    -- Between quests - which is exactly when a player is most lost - the map's own labels are
+    -- the only thing the game still says about where the story lies.
+    local mhits = M.markerHits()
+    if mhits ~= nil and #mhits > 0 then
+        parts[#parts + 1] = "ближайшая метка: " .. describe(mhits[1])
+    end
+    say(table.concat(parts, ". "))
+    return false
 end
 
--- Kept as the old name; everything about it now lives in questGo.
+-- Kept as the old name. Walking itself now lives in approachEntry, which this no longer
+-- calls: the key selects, and the scanner's own go key walks.
 M.goObjective = M.questGo
 
 --- Say the objective the moment it changes, without being asked.

@@ -295,6 +295,41 @@ local function onMessage(channel, payload)
     end
 end
 
+--- Tell the client when a quest moves, because only this half is told.
+---
+--- `QuestUpdate` is the call the story itself makes - it is all over the goal scripts,
+--- `QuestUpdate((CHARACTER)_Player, "TUT_NautiloidEscape", "LearnedHelm_Laezel")` - and it
+--- fires whether or not anyone has the journal open. The client turns the step into an
+--- objective through the shipped journal table; nothing but the ids crosses the wire.
+---
+--- Two arities because the story uses both: with the character who caused it and without.
+---
+--- Registered once per session and never unregistered, which is deliberate. The extender has
+--- no way to drop an Osiris listener, and a reload builds a second module whose listener would
+--- stack on the first. The guard is a global so the reload finds it: the closure left behind
+--- keeps working, since all it does is read its arguments and broadcast them.
+function M.questListen()
+    if _G.A11Y_QUEST_OSI ~= nil then
+        _P("[nav-srv] quest listener already registered")
+        return true
+    end
+    local ok = false
+    for _, arity in ipairs({ 2, 3 }) do
+        local r = try(function()
+            Ext.Osiris.RegisterListener("QuestUpdate", arity, "after", function(a, b, c)
+                local quest, step = a, b
+                if arity == 3 then quest, step = b, c end
+                M.reply({ cmd = "quest", quest = tostring(quest), step = tostring(step) })
+                _P("[nav-srv] quest " .. tostring(quest) .. " -> " .. tostring(step))
+            end)
+        end)
+        if r.ok then ok = true
+        else _P("[nav-srv] QuestUpdate/" .. arity .. " listener failed: " .. tostring(r.error)) end
+    end
+    if ok then _G.A11Y_QUEST_OSI = true end
+    return ok
+end
+
 function M.listen()
     -- A reload leaves the previous listener alive and answering from a dead closure, the
     -- same way input subscriptions do, so the id is kept in a global and dropped first.
@@ -312,6 +347,7 @@ function M.listen()
     _G.A11Y_NAV_NET = id
     M.netId = id
     _P("[nav-srv] listening on " .. M.CHANNEL .. " (" .. tostring(id) .. ")")
+    pcall(M.questListen)
     pcall(M.reportCalls)
     return true
 end
