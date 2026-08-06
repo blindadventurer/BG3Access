@@ -11,6 +11,10 @@ BG3Access/Mods/BG3Access/ScriptExtender/Lua/A11y/
 *.pak
 dist/
 
+# Third-party mod archives dropped in by hand (Native Camera Tweaks and the like).
+# Not ours to redistribute; the plugin itself lives in the game's Plugins folder.
+*.zip
+
 # Local scratch
 *.log
 *.bak
