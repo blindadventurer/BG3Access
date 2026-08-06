@@ -1557,6 +1557,128 @@ M.PANEL_NAMES = {
 
 --- The confirmation box on top of everything, read whole: what it asks, and what answering
 --- it costs a button-press.
+-- The world context menu ---------------------------------------------------------------
+--
+-- X on the pad, and the most useful thing in the game that the layer could not see at all: it is
+-- where "Вскрыть" lives - picking a lock with thieves' tools - along with "Использовать",
+-- "Осмотреть", "Разделить" and everything else an object will allow. A player found it with OCR
+-- and could not read a single line of it.
+--
+-- It is not in the widget tree, and no depth would have found it. `WorldContextMenu.xaml` is
+-- nine lines: one `ls:LSEntityObject` named `WorldContextEntity`, with the menu attached as
+--
+--     <ls:LSEntityObject.ContextMenu><ls:ContextMenu .../></ls:LSEntityObject.ContextMenu>
+--
+-- - a **property**, and a popup that renders in a layer of its own. So the widget walks as an
+-- empty box while the menu is on screen, which is exactly what it did.
+--
+-- Through the property it reads cleanly: `IsOpen`, `HasItems`, and a `FocusElement` that says
+-- which row the player is on. The rows themselves are duplicated four to sixteen times over by
+-- the template - split-screen holders, text and its shadow - so they are deduplicated by value
+-- in first-appearance order, which is the order they are shown in.
+M.ctxOpen = nil
+M.ctxItems = nil
+M.ctxFocus = nil
+
+--- The popup object behind the context menu, or nil when there is none open.
+function M.contextPopup(ws)
+    local node = nil
+    for i = 1, #ws do
+        if ws[i].visible ~= false and str(ws[i].name) == "WorldContextMenu" then
+            node = ws[i].node
+            break
+        end
+    end
+    if node == nil then return nil end
+
+    local ent = nil
+    local function find(o, d)
+        if o == nil or d > 6 or ent ~= nil then return end
+        local ch, cn = A.kids(o)
+        for i = 1, cn do
+            local p = props(ch[i])
+            if str(p.Name) == "WorldContextEntity" then ent = ch[i] return end
+            find(ch[i], d + 1)
+        end
+    end
+    find(node, 0)
+    if ent == nil then return nil end
+
+    local ep = props(ent)
+    local menu = ep.ContextMenu
+    if menu == nil then return nil end
+    local mp = props(menu)
+    if mp.IsOpen ~= true then return nil end
+    return menu, mp
+end
+
+--- The strings under a node, in tree order, each one only the first time.
+local function ctxStrings(o, limit)
+    local out, seen, left = {}, {}, { n = limit or 2500 }
+    local function rec(x, d)
+        if x == nil or d > 16 or left.n <= 0 or #out >= 24 then return end
+        local ch, cn = A.kids(x)
+        for i = 1, cn do
+            left.n = left.n - 1
+            if left.n <= 0 then return end
+            local p = props(ch[i])
+            -- The row that names whose menu this is, not one of its actions.
+            if not str(p.Name):find("PlayerName", 1, true) then
+                local t = p.Text
+                if type(t) == "string" and t ~= "" and A.looksLikeText(t) then
+                    t = t:gsub("^%s+", ""):gsub("%s+$", "")
+                    if not seen[t] then
+                        seen[t] = true
+                        out[#out + 1] = t
+                    end
+                end
+                rec(ch[i], d + 1)
+            end
+        end
+    end
+    rec(o, 0)
+    return out
+end
+M.ctxStrings = ctxStrings
+
+function M.contextTick(ws)
+    local menu, mp = M.contextPopup(ws)
+    if menu == nil then
+        if M.ctxOpen then
+            M.ctxOpen, M.ctxItems, M.ctxFocus = nil, nil, nil
+        end
+        return false
+    end
+
+    -- Opened: the whole list, once. It is short - three or four rows on a door - and hearing it
+    -- whole is the difference between a menu and a wall.
+    if not M.ctxOpen then
+        M.ctxOpen = true
+        local items = ctxStrings(menu)
+        M.ctxItems = items
+        M.ctxFocus = nil
+        if #items > 0 then
+            say("Действия: " .. table.concat(items, ", "))
+        else
+            say("Действия, пусто")
+        end
+        return true
+    end
+
+    -- And which row the player is on, as they move. `FocusElement` is the menu's own answer, so
+    -- no highlight has to be guessed at from colours.
+    local focus = mp.FocusElement
+    if focus ~= nil then
+        local here = ctxStrings(focus, 200)[1]
+        if here ~= nil and here ~= M.ctxFocus then
+            M.ctxFocus = here
+            say(here)
+            return true
+        end
+    end
+    return true
+end
+
 -- The camp panel ---------------------------------------------------------------------
 --
 -- The screen a player meets when they use the bedroll, and the one that stopped a tester dead:
@@ -4510,6 +4632,14 @@ local function readerTick()
     -- A roll takes the pass for the plainest reason there is: it is a decision with a number
     -- attached and a button waiting, and everything else on screen at that moment is scenery.
     if soft(function() return M.rollTick(ws) end) then
+        throttle(micros() - t0)
+        return
+    end
+
+    -- The world context menu takes the pass whole, for the same reason a modal does: it holds
+    -- the input until it is answered, and it is a popup rather than a screen, so nothing else in
+    -- this pass would ever mention it.
+    if soft(function() return M.contextTick(ws) end) then
         throttle(micros() - t0)
         return
     end

@@ -58,10 +58,16 @@ function W.dump(want, depth, budget)
     want = tostring(want or "MakeCamp")
     local ws = soft(Pad.findWidgets) or {}
     local node, found = nil, nil
+    -- Exact name wins over a substring, and the trap is worth naming: "Overlay" is also inside
+    -- CombatantsOverlay, CrossplayOverlay and AlwaysOnTopOverlay, so taking the last match
+    -- dumped an empty widget while the one that was asked for sat higher in the list.
     for i = 1, #ws do
         local n = str(ws[i].name)
-        if ws[i].visible ~= false and n:lower():find(want:lower(), 1, true) then
-            node, found = ws[i].node, n
+        if ws[i].visible ~= false then
+            if n == want then node, found = ws[i].node, n break end
+            if node == nil and n:lower():find(want:lower(), 1, true) then
+                node, found = ws[i].node, n
+            end
         end
     end
     if node == nil then
@@ -89,7 +95,6 @@ function W.dump(want, depth, budget)
                         seen["t:" .. t] = true
                         out.texts[#out.texts + 1] = { text = t, at = path }
                     end
-                    walk(kid, d + 1, path .. "/" .. tostring(p.Name or i))
                 else
                     -- A bound record. Its keys are the answer to the whole question.
                     local rec = {}
@@ -102,6 +107,8 @@ function W.dump(want, depth, budget)
                         out.records[#out.records + 1] = { at = path, fields = rec }
                     end
                 end
+                -- Every child, element or not - see the same note in W.msg.
+                walk(kid, d + 1, path .. "/" .. tostring(p.Name or i))
             end
         end
     end
@@ -130,10 +137,16 @@ function W.msg(want)
     want = tostring(want or "MessageBox")
     local ws = soft(Pad.findWidgets) or {}
     local node, found = nil, nil
+    -- Exact name wins over a substring, and the trap is worth naming: "Overlay" is also inside
+    -- CombatantsOverlay, CrossplayOverlay and AlwaysOnTopOverlay, so taking the last match
+    -- dumped an empty widget while the one that was asked for sat higher in the list.
     for i = 1, #ws do
         local n = str(ws[i].name)
-        if ws[i].visible ~= false and n:lower():find(want:lower(), 1, true) then
-            node, found = ws[i].node, n
+        if ws[i].visible ~= false then
+            if n == want then node, found = ws[i].node, n break end
+            if node == nil and n:lower():find(want:lower(), 1, true) then
+                node, found = ws[i].node, n
+            end
         end
     end
     if node == nil then _P("[rest] no visible " .. want) return nil end
@@ -153,7 +166,11 @@ function W.msg(want)
                 if type(t) == "string" and t ~= "" then
                     out[#out + 1] = { at = here, text = t, vis = p.IsVisible }
                 end
-                if p.ActualWidth ~= nil or p.IsVisible ~= nil then walk(ch[i], d + 1, here) end
+                -- Down every child, not only the ones that look like elements. The first version
+                -- descended only where ActualWidth or IsVisible was set, and on `Overlay` - which
+                -- is where the world context menu turns out to live - that stops at the first
+                -- wrapper: the sweep found four strings in it and this found none.
+                walk(ch[i], d + 1, here)
             end
         end
     end
@@ -205,7 +222,181 @@ function W.watch(names)
     return W.watching
 end
 
+--- The world context menu, which is not where any walk of the tree will find it.
+---
+--- WorldContextMenu.xaml is nine lines of markup and they explain the whole silence: the widget
+--- holds one `ls:LSEntityObject` named `WorldContextEntity`, and the menu hangs off it as
+---
+---     <ls:LSEntityObject.ContextMenu><ls:ContextMenu .../></ls:LSEntityObject.ContextMenu>
+---
+--- - a **property**, not a child, and a popup that renders in its own layer. So walking the
+--- widget's children finds an empty box however deep it goes, which is exactly what it did:
+--- zero text while the menu was open on screen and read out by OCR.
+---
+--- Its data comes from `CurrentPlayer.UIData.WorldContextMenu`, so both are tried here: the
+--- property object and the record behind it.
+function W.ctxmenu()
+    local ws = soft(Pad.findWidgets) or {}
+    local node = nil
+    for i = 1, #ws do
+        if str(ws[i].name) == "WorldContextMenu" then node = ws[i].node break end
+    end
+    if node == nil then _P("[rest] no WorldContextMenu widget") return nil end
+
+    local out = { entity = nil, props = {}, menu = {}, data = {} }
+
+    -- The entity object the menu hangs off.
+    local ent = nil
+    local function find(o, d)
+        if o == nil or d > 6 or ent ~= nil then return end
+        local ch, cn = A.kids(o)
+        for i = 1, cn do
+            local p = soft(function() return ch[i]:GetAllProperties() end)
+            if type(p) == "table" then
+                if str(p.Name) == "WorldContextEntity" then ent = ch[i] return end
+                find(ch[i], d + 1)
+            end
+        end
+    end
+    find(node, 0)
+    if ent == nil then
+        _P("[rest] WorldContextEntity not found")
+        A.write("rest_ctx", out)
+        return out
+    end
+    out.entity = true
+
+    local ep = soft(function() return ent:GetAllProperties() end) or {}
+    for k, v in pairs(ep) do out.props[tostring(k)] = value(v) or ("<" .. type(v) .. ">") end
+
+    -- The popup itself. Everything under it, text and records alike.
+    local menu = ep.ContextMenu
+    if menu ~= nil then
+        local left = { n = 3000 }
+        local function walk(o, d, path)
+            if o == nil or d > 16 or left.n <= 0 then return end
+            local ch, cn = A.kids(o)
+            for i = 1, cn do
+                left.n = left.n - 1
+                if left.n <= 0 then return end
+                local p = soft(function() return ch[i]:GetAllProperties() end)
+                if type(p) == "table" then
+                    local here = path .. "/" .. tostring(i) ..
+                                 ((p.Name ~= nil and str(p.Name) ~= "") and (":" .. str(p.Name)) or "")
+                    local t = p.Text
+                    if type(t) == "string" and t ~= "" then
+                        out.menu[#out.menu + 1] = { at = here, text = t }
+                    end
+                    local hdr = p.Header
+                    if hdr ~= nil then
+                        out.menu[#out.menu + 1] = { at = here, header = str(hdr) }
+                    end
+                    walk(ch[i], d + 1, here)
+                end
+            end
+        end
+        walk(menu, 0, "menu")
+        local mp = soft(function() return menu:GetAllProperties() end)
+        if type(mp) == "table" then
+            for k, v in pairs(mp) do out.data["menu." .. tostring(k)] = value(v) or ("<" .. type(v) .. ">") end
+        end
+    end
+
+    -- And the record the whole thing is bound to.
+    local d = soft(function() return Pad.dataOf(ent) end)
+    if type(d) == "table" then
+        for k, v in pairs(d) do out.data["ctx." .. tostring(k)] = value(v) or ("<" .. type(v) .. ">") end
+    end
+
+    _P("[rest] context menu: " .. #out.menu .. " strings, " ..
+       tostring(ep.ContextMenu ~= nil and "popup found" or "no popup property"))
+    A.write("rest_ctx", out)
+    return out
+end
+
+--- Every visible widget, and every string in it. One shot, for when the panel you are looking
+--- for is not the widget you expected.
+---
+--- The world context menu turned out not to live in `WorldContextMenu` - that one is on the tree
+--- from the first frame and stayed empty while the menu was open on screen. Rather than guess at
+--- the next name, this asks all of them at once and lets the strings say where they are.
+function W.sweep(budget, depth)
+    local ws = soft(Pad.findWidgets) or {}
+    local out = {}
+    for i = 1, #ws do
+        local w = ws[i]
+        if w.visible ~= false then
+            local name = str(w.name)
+            local texts, seen, left = {}, {}, { n = budget or 900 }
+            local function rec(o, d)
+                if o == nil or d > (depth or 14) or left.n <= 0 then return end
+                local ch, cn = A.kids(o)
+                for k = 1, cn do
+                    left.n = left.n - 1
+                    if left.n <= 0 then return end
+                    local p = soft(function() return ch[k]:GetAllProperties() end)
+                    if type(p) == "table" and p.IsVisible ~= false then
+                        local t = p.Text
+                        if type(t) == "string" and t ~= "" and not seen[t] then
+                            seen[t] = true
+                            texts[#texts + 1] = t
+                        end
+                        rec(ch[k], d + 1)
+                    end
+                end
+            end
+            rec(w.node, 0)
+            if #texts > 0 then out[#out + 1] = { screen = name, n = #texts, texts = texts } end
+        end
+    end
+    table.sort(out, function(a, b) return a.n > b.n end)
+    for i = 1, math.min(#out, 8) do
+        _P("[rest] " .. out[i].screen .. ": " .. out[i].n .. " - " ..
+           table.concat(out[i].texts, " | "):sub(1, 120))
+    end
+    A.write("rest_sweep", out)
+    return out
+end
+
+--- Wait for a widget to have something in it, rather than for it to appear.
+---
+--- Some panels are not raised and dropped - they are always on the tree and merely empty. The
+--- world context menu is one: it is listed and visible from the moment the HUD is up, and only
+--- fills when the player opens it. So visibility says nothing, and the thing to poll is whether
+--- any text has arrived.
+function W.awaitText(want)
+    want = tostring(want or "WorldContextMenu")
+    if W.waiting ~= nil then
+        soft(function() Ext.Events.Tick:Unsubscribe(W.waiting) end)
+        W.waiting = nil
+    end
+    W.waiting = soft(function()
+        return Ext.Events.Tick:Subscribe(function()
+            local ws = soft(Pad.findWidgets) or {}
+            for i = 1, #ws do
+                local n = str(ws[i].name)
+                if ws[i].visible ~= false and n:lower():find(want:lower(), 1, true) then
+                    local rows = soft(function() return W.msg(want) end)
+                    if type(rows) == "table" and #rows > 0 then
+                        _P("[rest] " .. n .. " filled: " .. #rows .. " texts")
+                        soft(function() W.dump(want, 20, 20000) end)
+                        soft(function() Ext.Events.Tick:Unsubscribe(W.waiting) end)
+                        W.waiting = nil
+                        return
+                    end
+                end
+            end
+        end)
+    end)
+    _P("[rest] waiting for text in " .. want .. ": " .. tostring(W.waiting))
+    return W.waiting
+end
+
 function W.unwatch()
+    if W.waiting ~= nil then
+        soft(function() Ext.Events.Tick:Unsubscribe(W.waiting) end)
+        W.waiting = nil
+    end
     if W.watching ~= nil then
         soft(function() Ext.Events.Tick:Unsubscribe(W.watching) end)
         W.watching = nil

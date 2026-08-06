@@ -267,6 +267,10 @@ category instead.
   between moving the story on and running an errand. The list of quest targets leads with the
   main story for the same reason; it still says where the nearest one is when that is
   something else.
+- **The context menu** — the one on **X**, where "Вскрыть" lives along with everything else an
+  object will allow. It reads the whole list the moment it opens ("Действия: Использовать,
+  Вскрыть, Перейти") and then each row as you move onto it. Worth reaching for on anything that
+  looks locked, stuck or interesting: the ordinary A press only ever does the obvious thing.
 - **The question the game asks before a step that cannot be taken back.** Larian call it a
   ready check, and it is the only warning there is before an act closes behind you: the modal
   that says "возможно, вы уже не сможете вернуться", the one that warns the region ahead is
