@@ -15,13 +15,14 @@ local DEV = "A11y/"
 
 -- Load order is a dependency order: a11y-nav and a11y-pad read _G.A11y at load time, so the
 -- menu module has to be in place before them.
--- a11y-questdata is data, not code: it depends on nothing, everything that reads it checks for
--- nil first, and it is generated rather than written - so it loads first and is marked
--- optional. A missing module normally takes the whole layer down with it, which is right for
--- code and wrong for a table: losing the journal index costs the quest pointer, and losing the
--- layer costs the game.
+-- a11y-questdata and a11y-placedata are data, not code: they depend on nothing, everything that
+-- reads them checks for nil first, and they are generated rather than written - so they load
+-- first and are marked optional. A missing module normally takes the whole layer down with it,
+-- which is right for code and wrong for a table: losing the journal index costs the quest
+-- pointer, losing the place index costs the place names, and losing the layer costs the game.
 local ORDER = {
     { name = "a11y-questdata", global = "QuestData", optional = true },
+    { name = "a11y-placedata", global = "PlaceData", optional = true },
     { name = "a11y-menu",      global = "A11y"      },
     { name = "a11y-nav",       global = "Nav"       },
     { name = "a11y-pad",       global = "Pad"       },

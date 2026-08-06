@@ -171,6 +171,21 @@ local function levelIndex()
         end
     end
     if n == 0 then return nil end
+
+    -- The fast-travel shrines arrive from the server as "точка перехода" and nothing else, and
+    -- a level holds up to sixteen of them - a list of sixteen identical rows, which is the same
+    -- as no list. The game names every one, so the shipped place table renames them here, where
+    -- both `nameOf` and the landmark list pick it up for free.
+    local _, wps = M.placeTables()
+    if wps ~= nil then
+        local lower = {}
+        for u in pairs(by) do lower[tostring(u):lower()] = u end
+        for i = 1, #wps do
+            local key = lower[tostring(wps[i][3]):lower()]
+            if key ~= nil then by[key].kind = M.wpName(wps[i]) end
+        end
+    end
+
     M.index = by
     _P("[nav] level index: " .. n .. " navigable things")
     return by
@@ -601,6 +616,10 @@ M.CATEGORIES = {
     { key = "all",     name = "всё" },
     { key = "markers", name = "метки" },
     { key = "quest",   name = "задача" },
+    -- Named places, and the fast-travel shrines among them. Next to "задача" on purpose: the
+    -- two together are the whole answer to "where do I go" - one says where the story is, the
+    -- other says what the world is made of.
+    { key = "places",  name = "локации" },
     { key = "landmarks", name = "ориентиры" },
     { key = "explore", name = "неизведанное" },
     { key = "beings",  name = "существа" },
@@ -753,6 +772,8 @@ function M.rebuildView()
     -- metres away and hold nothing the scan would ever return.
     if cat.key == "explore" then
         out = M.exploreView()
+    elseif cat.key == "places" then
+        out = M.placeView()
     elseif cat.key == "quest" then
         -- Built, not filtered - see M.questView. This is also what makes the category work at
         -- any range: the entries come from UUIDs resolved against the world, so a target on
@@ -772,7 +793,7 @@ function M.rebuildView()
                 if u == nil or not have[tostring(u)] then out[#out + 1] = it end
             end
         end
-        table.sort(out, function(x, y) return (x.dist or 0) < (y.dist or 0) end)
+        M.landmarkSort(out)
     else
         local limit = M.FAR[cat.key] and M.SCAN_RADIUS or M.radius
         out = {}
@@ -1066,12 +1087,401 @@ function M.exploreView()
             local dx, dz = a.pos[1] - pos[1], a.pos[3] - pos[3]
             local dist = math.sqrt(dx * dx + dz * dz)
             if dist <= M.EXPLORE_MAX then
-                out[#out + 1] = { name = "участок", kind = nil, anchor = a.guid,
-                                  pos = a.pos, dist = dist, dir = bearing(dx, dz, yaw) }
+                local e = { name = "участок", kind = nil, anchor = a.guid,
+                            pos = a.pos, dist = dist, dir = bearing(dx, dz, yaw) }
+                -- Which named place that patch of ground belongs to, when it belongs to one.
+                -- "Участок, на два, 180 м" is a direction; "участок, Вымершая деревня, на два,
+                -- 180 м" is somewhere to decide about.
+                M.placeOf(e)
+                out[#out + 1] = e
             end
         end
     end
     table.sort(out, function(x, y) return x.dist < y.dist end)
+    return out
+end
+
+-- The places of the world, and which one you are standing in --------------------------
+--
+-- The scanner could say what stood near you and never what any of it was *part of*. A hundred
+-- rows of "дверь, рычаг, сундук" with a distance each is not a list a person can hold in their
+-- head, and it was the honest answer the layer had: it knew objects and it did not know places.
+--
+-- The game knows them exactly, and says so twice over. `DB_Subregion` binds a named area to a
+-- trigger, and the trigger carries its shape - a polygon, a box, or a bare point. `DB_WaypointInfo`
+-- binds a fast-travel name to the shrine that serves it. Both are in Gustav.pak, both are joined
+-- offline by tools/build-place-index.ps1, and both arrive here as `a11y-placedata` - 268 places
+-- and 40 shrines across 24 levels, as handles rather than text, so the game renders the names in
+-- whatever language it is being played in.
+--
+-- Which turns three questions from guesses into arithmetic:
+--
+--   where am I            the smallest place whose ring contains the character
+--   where is that thing   the place the thing stands in, said next to its name
+--   where can I go        a category of places, nearest edge first, walkable like anything else
+--
+-- The smallest ring wins on purpose: places nest, and the useful answer at the bottom of the
+-- Grymforge is "Гримфордж", not "Подземье". The vertical band comes with each ring for the same
+-- reason - a cellar and the room above it share their outline and differ only in height.
+
+M.places = nil          -- the subregion rows of the level we are in
+M.waypoints = nil       -- and its fast-travel shrines
+M.placesLevel = nil
+M.placeMemo = nil       -- entity uuid -> place name, thrown away with the level
+M.placeNow = nil        -- what the character is standing in, kept by placeTick
+M.placeSaid = nil       -- the last place announced, so a boundary is not a bell
+
+-- How far outside its own height band a place still owns a point. Floors are authored to the
+-- centimetre and characters stand on props, so a metre or two of slack is the difference
+-- between "you are in the tea house" and silence.
+M.PLACE_Y = 3
+
+local RING = 8          -- which slot of a place row holds its outline
+
+--- The shipped tables for the level the character is in, or nil.
+local function placeTables()
+    local pd = _G.PlaceData
+    if pd == nil or type(pd.sub) ~= "table" then return nil, nil, nil end
+    local lv = M.myLevel()
+    if lv == nil then return nil, nil, nil end
+    if M.placesLevel ~= lv then
+        M.placesLevel = lv
+        M.placeMemo = {}
+        M.placeNow, M.placeSaid = nil, nil
+        M.places = pd.sub[lv]
+        M.waypoints = pd.wp[lv]
+        _P("[nav] places: " .. #(M.places or {}) .. " areas, " ..
+           #(M.waypoints or {}) .. " waypoints in " .. lv)
+    end
+    return M.places, M.waypoints, lv
+end
+M.placeTables = placeTables
+
+--- The centre of a place and how big it is, worked out once and left on the row.
+---
+--- The centre matters because the row's own position is the polygon's origin, which for a large
+--- area is nowhere near the middle of it - the Emerald Grove's origin sits on its eastern edge.
+--- The area matters because it is what decides which of two nested places is the answer.
+local function placeShape(row)
+    if row.cx ~= nil then return row end
+    local ring = row[RING]
+    local n = (type(ring) == "table") and math.floor(#ring / 2) or 0
+    if n < 3 then
+        row.cx, row.cz, row.area = row[3], row[5], 0
+        return row
+    end
+    local sx, sz, a2 = 0, 0, 0
+    local px, pz = ring[n * 2 - 1], ring[n * 2]
+    for i = 1, n do
+        local x, z = ring[i * 2 - 1], ring[i * 2]
+        sx, sz = sx + x, sz + z
+        a2 = a2 + (px * z - x * pz)
+        px, pz = x, z
+    end
+    row.cx, row.cz, row.area = sx / n, sz / n, math.abs(a2) / 2
+    return row
+end
+
+--- Is this point inside the place.
+local function inPlace(row, pos)
+    local ring = row[RING]
+    local n = (type(ring) == "table") and math.floor(#ring / 2) or 0
+    if n < 3 then return false end
+    local y = pos[2]
+    if type(y) == "number" and (y < row[6] - M.PLACE_Y or y > row[7] + M.PLACE_Y) then
+        return false
+    end
+    local x, z = pos[1], pos[3]
+    local inside, j = false, n
+    for i = 1, n do
+        local xi, zi = ring[i * 2 - 1], ring[i * 2]
+        local xj, zj = ring[j * 2 - 1], ring[j * 2]
+        if ((zi > z) ~= (zj > z)) and (x < (xj - xi) * (z - zi) / (zj - zi) + xi) then
+            inside = not inside
+        end
+        j = i
+    end
+    return inside
+end
+
+--- How far to the place: nought when standing in it, otherwise to its nearest edge.
+---
+--- To the edge rather than to the middle, because "how far to the grove" is asked by someone
+--- who wants to know when they are there, and the middle of a hundred-metre area is not it.
+local function placeDist(row, pos)
+    if inPlace(row, pos) then return 0 end
+    local ring = row[RING]
+    local n = (type(ring) == "table") and math.floor(#ring / 2) or 0
+    local x, z = pos[1], pos[3]
+    if n < 3 then
+        placeShape(row)
+        local dx, dz = row.cx - x, row.cz - z
+        return math.sqrt(dx * dx + dz * dz)
+    end
+    local best, j = nil, n
+    for i = 1, n do
+        local ax, az = ring[j * 2 - 1], ring[j * 2]
+        local bx, bz = ring[i * 2 - 1], ring[i * 2]
+        local ux, uz = bx - ax, bz - az
+        local len = ux * ux + uz * uz
+        local t = 0
+        if len > 0 then
+            t = ((x - ax) * ux + (z - az) * uz) / len
+            if t < 0 then t = 0 elseif t > 1 then t = 1 end
+        end
+        local px, pz = ax + t * ux, az + t * uz
+        local d = math.sqrt((x - px) ^ 2 + (z - pz) ^ 2)
+        if best == nil or d < best then best = d end
+        j = i
+    end
+    return best or 0
+end
+M.inPlace = inPlace
+M.placeDist = placeDist
+M.placeShape = placeShape
+
+--- What a place is called, in the language the game is being played in.
+local function placeName(row)
+    if row == nil then return nil end
+    if row.said ~= nil then return row.said end
+    local pad = _G.Pad
+    local t = nil
+    if row[2] ~= nil and pad ~= nil and pad.loca ~= nil then
+        t = soft(function() return pad.loca(row[2]) end)
+    end
+    if type(t) ~= "string" or t == "" or t == row[2] then t = row[1] end
+    row.said = t
+    return t
+end
+M.placeName = placeName
+
+--- The place a point is in - the smallest one that contains it - or nil for open ground.
+function M.placeAt(pos)
+    local rows = placeTables()
+    if rows == nil or pos == nil then return nil end
+    local best = nil
+    for i = 1, #rows do
+        local row = rows[i]
+        if inPlace(row, pos) then
+            placeShape(row)
+            if best == nil or row.area < best.area then best = row end
+        end
+    end
+    return best
+end
+
+--- What the level itself is called - "Пустошь", not "WLD_Main_A".
+function M.levelName()
+    local pd = _G.PlaceData
+    local lv = M.myLevel()
+    if pd == nil or lv == nil or type(pd.lvl) ~= "table" then return nil end
+    local h = pd.lvl[lv]
+    if h == nil then return nil end
+    local pad = _G.Pad
+    local t = (pad ~= nil and pad.loca ~= nil) and soft(function() return pad.loca(h) end) or nil
+    if type(t) ~= "string" or t == "" or t == h then return nil end
+    return t
+end
+
+--- The place a scan entry stands in, memoised by the thing rather than recomputed per sentence.
+---
+--- Keyed by uuid where there is one: an index row is the same object at the same coordinates for
+--- as long as the level lasts, and the landmark list asks this of every row on every rebuild.
+function M.placeOf(it)
+    if it == nil or it.pos == nil or it.place then return nil end
+    if it.where ~= nil then return it.where ~= false and it.where or nil end
+    local memo = M.placeMemo
+    -- Anything that names the same thing twice will do as a key. An anchor is a fixed point of
+    -- the level, an indexed row is an object that does not move, and a swept entity keeps the
+    -- same proxy for the session - so all three are worth remembering rather than re-measuring
+    -- against fifty polygons on every rebuild.
+    local key = it.uuid or it.anchor or (it.entity ~= nil and tostring(it.entity)) or nil
+    if memo ~= nil and key ~= nil and memo[key] ~= nil then
+        it.where = memo[key]
+        return it.where ~= false and it.where or nil
+    end
+    local row = M.placeAt(it.pos)
+    local name = row and placeName(row) or false
+    it.where = name
+    if memo ~= nil and key ~= nil then memo[key] = name end
+    return name ~= false and name or nil
+end
+
+--- What a fast-travel shrine is called.
+local function wpName(w)
+    if w.said ~= nil then return w.said end
+    local pad = _G.Pad
+    local t = nil
+    if w[2] ~= nil and pad ~= nil and pad.loca ~= nil then
+        t = soft(function() return pad.loca(w[2]) end)
+    end
+    if type(t) ~= "string" or t == "" or t == w[2] then t = "точка перехода" end
+    w.said = t
+    return t
+end
+M.wpName = wpName
+
+--- The named places of this level, nearest first, with the fast-travel shrines among them.
+---
+--- Built rather than filtered, for the reason the quest category is: a place is not an entity
+--- and the sweep will never return one. The entries are shaped like scan entries, so the go key,
+--- `describe` and the cursor take them without knowing what they are.
+function M.placeView()
+    local rows, wps = placeTables()
+    local me = M.me()
+    local pos = me and positionOf(me)
+    if pos == nil then return {} end
+    local yaw = yawOf(me)
+
+    local out, byId = {}, {}
+    for i = 1, #(rows or {}) do
+        local row = rows[i]
+        placeShape(row)
+        local d = placeDist(row, pos)
+        -- One name, one entry. A place is often two triggers - a hall and its cellar, a shop
+        -- and its back room - and hearing "Ласка Шаресс" three times in a row is noise, not
+        -- detail. The nearest of them stands for the rest.
+        local id = row[1]
+        local was = byId[id]
+        if was == nil or d < was.dist then
+            local dx, dz = row.cx - pos[1], row.cz - pos[3]
+            local e = { name = placeName(row), kind = nil, dist = d,
+                        dir = bearing(dx, dz, yaw), pos = { row.cx, row[4], row.cz },
+                        anchor = "p:" .. id, place = true, inside = (d <= 0) or nil,
+                        -- Kept so that refreshing the entry measures it the way it was built.
+                        row = row }
+            if was == nil then
+                out[#out + 1] = e
+                byId[id] = e
+            else
+                for k, v in pairs(e) do was[k] = v end
+            end
+        end
+    end
+
+    for i = 1, #(wps or {}) do
+        local w = wps[i]
+        local e = soft(function() return Ext.Entity.Get(w[3]) end)
+        local p = (e and positionOf(e)) or { w[4], w[5], w[6] }
+        local dx, dz = p[1] - pos[1], p[3] - pos[3]
+        local d = math.sqrt(dx * dx + dz * dz)
+        -- The entity is handed over only from close in, and that is the same rule the quest
+        -- targets follow: with an entity the go key walks straight there, and a shrine three
+        -- hundred metres off is a crossing of the map on one press. Further out it is an
+        -- anchor, which walks in hops the player can hear the end of.
+        local near = (d <= M.QUEST_DIRECT)
+        out[#out + 1] = { name = wpName(w), kind = "точка перехода", dist = d,
+                          dir = bearing(dx, dz, yaw), pos = p, place = true,
+                          entity = near and e or nil, uuid = w[3],
+                          anchor = (not near) and ("w:" .. w[1]) or nil }
+    end
+
+    table.sort(out, function(x, y) return (x.dist or 0) < (y.dist or 0) end)
+    return out
+end
+
+--- Say the place the moment the character walks into it, the way the game shows it on screen.
+---
+--- Only on arriving somewhere named: walking out of a place onto open ground says nothing, and
+--- the last named place is remembered rather than cleared, so pacing across a boundary does not
+--- ring a bell every pass.
+function M.placeTick()
+    local me = M.me()
+    local pos = me and positionOf(me)
+    if pos == nil then return false end
+    local row = M.placeAt(pos)
+    local name = row and placeName(row) or nil
+    M.placeNow = name
+    if name == nil or name == M.placeSaid then return false end
+    M.placeSaid = name
+    say("Локация: " .. name)
+    return true
+end
+
+-- Which objects the player's own quests point at, by uuid.
+--
+-- Built out of the shipped journal table, but never out of the whole of it: it knows every
+-- marker in the game, and tagging a lever with a quest nobody has started is a spoiler dressed
+-- as help. So the set is cut down to the quests the player has actually seen - the quest store
+-- is a record of what the journal showed and what the server reported, and that is the honest
+-- definition of "a task you have".
+M.questUuidsAt = nil
+M.questUuidsSet = nil
+M.QUEST_UUIDS_MS = 10000
+
+function M.questUuids()
+    local qd = _G.QuestData
+    if qd == nil or type(qd.obj) ~= "table" or type(qd.mk) ~= "table" then return nil end
+    local now = soft(Ext.Utils.MonotonicTime) or 0
+    if M.questUuidsSet ~= nil and (now - (M.questUuidsAt or 0)) < M.QUEST_UUIDS_MS then
+        return M.questUuidsSet
+    end
+    M.questUuidsAt = now
+
+    local quests = {}
+    local store = soft(function() return M.questStoreLoad() end)
+    for _, entry in pairs((store and store.quests) or {}) do
+        for _, t in ipairs(entry.tasks or {}) do
+            local oid = (t.handle ~= nil) and qd.oh[t.handle] or nil
+            local row = (oid ~= nil) and qd.obj[oid] or nil
+            if row ~= nil and row[1] ~= nil then quests[row[1]] = true end
+        end
+    end
+
+    local out, n = {}, 0
+    for _, row in pairs(qd.obj) do
+        if row[1] ~= nil and quests[row[1]] then
+            for i = 3, #row do
+                local pts = qd.mk[row[i]]
+                for j = 1, #(pts or {}) do
+                    local u = pts[j][3]
+                    if u ~= nil and out[u] == nil then
+                        out[u] = true
+                        n = n + 1
+                    end
+                end
+            end
+        end
+    end
+    M.questUuidsSet = out
+    return out
+end
+
+--- The landmark list, put in an order a person can hold in their head.
+---
+--- Distance alone was the order, and with a hundred rows in it that is not an order at all: the
+--- nearest thing in the goblin camp, then something in the grove, then the camp again. Now the
+--- rows are grouped by the place they stand in, the groups sorted by their own nearest member,
+--- and inside a group it is still nearest first. So the first thing said is still the nearest
+--- thing - nothing is hidden and nothing moved far - but everything that belongs together is
+--- now heard together.
+function M.landmarkSort(out)
+    local known = M.questUuids()
+    local best = {}
+    for i = 1, #out do
+        local it = out[i]
+        M.placeOf(it)
+        local key = (type(it.where) == "string") and it.where or ""
+        local d = it.dist or 0
+        if best[key] == nil or d < best[key] then best[key] = d end
+        if known ~= nil and it.task == nil then
+            local u = it.uuid or soft(function() return it.entity.Uuid.EntityUuid end)
+            if u ~= nil and known[tostring(u)] then it.task = true end
+        end
+    end
+    table.sort(out, function(x, y)
+        local kx = (type(x.where) == "string") and x.where or ""
+        local ky = (type(y.where) == "string") and y.where or ""
+        if kx ~= ky then
+            local bx, by = best[kx] or 0, best[ky] or 0
+            -- The key breaks the tie rather than leaving it: two groups whose nearest member is
+            -- the same distance away would otherwise compare equal, and table.sort is free to
+            -- interleave them, which is exactly the grouping this exists to produce.
+            if bx ~= by then return bx < by end
+            return kx < ky
+        end
+        return (x.dist or 0) < (y.dist or 0)
+    end)
     return out
 end
 
@@ -1172,8 +1582,23 @@ local function describe(it)
     -- the decision it changes - walk over there at all, and with whom - is taken from the list.
     local lock = M.lockPhrase(it.entity)
     if lock ~= nil then parts[#parts + 1] = lock end
-    if it.anchor ~= nil and it.dir then parts[#parts + 1] = it.dir end
-    parts[#parts + 1] = string.format("%.0f м", it.dist)
+    -- Which place the thing is part of, when that is not the place the character is standing
+    -- in. This is the whole of what turned the landmark list from a hundred anonymous rows into
+    -- something a person can hold: the same words, each now attached to somewhere, and the
+    -- places kept together in the order (M.landmarkSort). Left off for what is right here,
+    -- which is most of a near list, because saying it every time is noise.
+    if type(it.where) == "string" and it.where ~= M.placeNow then
+        parts[#parts + 1] = it.where
+    end
+    -- And whether the story wants it. Only ever for a quest the player has actually seen -
+    -- see M.questUuids.
+    if it.task then parts[#parts + 1] = "по заданию" end
+    if it.inside then
+        parts[#parts + 1] = "вы здесь"
+    else
+        if it.anchor ~= nil and it.dir then parts[#parts + 1] = it.dir end
+        parts[#parts + 1] = string.format("%.0f м", it.dist)
+    end
     return table.concat(parts, ", ")
 end
 M.describe = describe
@@ -1239,11 +1664,22 @@ end
 local function refreshEntry(it)
     local me = M.me()
     local mp = me and positionOf(me)
+    if mp == nil then return false end
+    -- A named place is measured to its edge rather than to the point that stands for it, so it
+    -- has to be refreshed the way it was built. Without this, stepping onto a place in the list
+    -- turned "Изумрудная роща, 5 м" into "Изумрудная роща, 70 м" - the distance to the middle
+    -- of it - and the two answers to the same question arrived a keypress apart.
+    if it.row ~= nil then
+        it.dist = M.placeDist(it.row, mp)
+        it.inside = (it.dist <= 0) or nil
+        it.dir = bearing(it.pos[1] - mp[1], it.pos[3] - mp[3], yawOf(me))
+        return true
+    end
     -- An exploration anchor is a place, not a thing: it has no entity to ask and its position
     -- cannot go stale. Everything else keeps the old rule, where a missing entity means the
     -- object is gone and the list has to be taken again.
     local p = it.entity and positionOf(it.entity) or (it.anchor and it.pos)
-    if mp == nil or p == nil then return false end
+    if p == nil then return false end
     local dx, dz = p[1] - mp[1], p[3] - mp[3]
     it.pos = p
     it.dist = math.sqrt(dx * dx + dz * dz)
@@ -1286,12 +1722,24 @@ function M.step(delta)
 end
 
 --- Where the character is standing, and which way it looks.
+---
+--- The two coordinates used to be the whole answer, and they are the one part of it a person
+--- cannot use: they say where you are to the engine, not to yourself. The place and the level
+--- are the answer the game itself gives a sighted player, in the corner of the screen.
 function M.where()
     local me = M.me()
     if me == nil then say("Персонаж не найден") return end
     local pos = positionOf(me)
     local name = nameOf(me) or "персонаж"
-    say(name .. ". " .. string.format("%.0f, %.0f", pos[1], pos[3]))
+    local parts = { name }
+    local row = M.placeAt(pos)
+    local place = row and placeName(row) or nil
+    M.placeNow = place
+    if place ~= nil then parts[#parts + 1] = place end
+    local lvl = M.levelName()
+    if lvl ~= nil and lvl ~= place then parts[#parts + 1] = lvl end
+    parts[#parts + 1] = string.format("%.0f, %.0f", pos[1], pos[3])
+    say(table.concat(parts, ". "))
     return pos
 end
 
@@ -2650,6 +3098,11 @@ function M.questView()
             end
         end
     end
+
+    -- Where each target is, in the world's own words. A quest target is routinely across the
+    -- level, and "Передатчик, 110 м" leaves out the one thing that would let a player decide
+    -- whether to set off now: which place it is in.
+    for i = 1, #out do M.placeOf(out[i]) end
 
     -- Name the quest only when there is more than one to tell apart. With a single quest the
     -- title is on every line and adds nothing; with three it is the whole point of the list.

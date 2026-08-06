@@ -3687,6 +3687,10 @@ local function readerTick()
             -- an index from the level before is what sends a character through a door they
             -- never opened.
             soft(function() nav.levelWatch() end)
+            -- Walking into a named place is what the game puts on screen and the layer never
+            -- said. It goes with the level watch because it answers the same question at the
+            -- next scale down: not "which region" but "which part of it".
+            soft(function() nav.placeTick() end)
             soft(function() nav.combatTick() end)
             -- One objective finishing and the next appearing is the one thing in a quest a
             -- blind player cannot notice at all, and it is exactly when the navigator button

@@ -144,6 +144,21 @@ where to go. It does not list what is near you — it lists the fixtures of the 
 doors, ladders, consoles, levers, keys. Distance and direction, at any range. That is the
 list that ends a "where is the thing my quest is about" walk in one press instead of forty.
 
+Every row of it now says **which place it is part of** — "рычаг, Оскверненный храм, 40 м" —
+and rows in the same place are kept together, so a hundred fixtures arrive as eight or ten
+groups instead of one flat run. What the game itself has pointed you at is marked "по
+заданию", and only ever for a quest you have actually seen in your journal.
+
+Another kind is **локации** — the places of the level by name, nearest edge first, with the
+fast-travel shrines among them. "Изумрудная роща, 5 м", "Лагерь гоблинов, точка перехода, на
+два, 240 м". The one you are standing in says "вы здесь". Walking to a place works like
+walking to anything else: **Alt + Home**, in hops you can hear the end of.
+
+The name of the place is also spoken on its own the moment you walk into one — "Локация:
+Изумрудная роща" — the way the game prints it on screen for everyone else. So "where am I"
+usually needs no key at all; when it does, the place you are in is the first row of
+**локации**, the one that says "вы здесь".
+
 **Home** — how the walk is going: how far is left, and whether that number is going down.
 On a panel it goes to the top of the list.
 
@@ -191,6 +206,12 @@ category instead.
   that opens a pod both have no name at all in the game's data, so nothing could ever have
   read them out. The layer now calls such a thing what it is — пульт, рычаг, лестница, ключ —
   taken from what the level was built from.
+- **Where you are, by name.** The game has a name for every part of every level — Изумрудная
+  роща, Оскверненный храм, Приют Вокин — and 268 of them, with their outlines, now travel with
+  the layer. It says the name when you walk in, lists them all as a category, and attaches the
+  place to everything else it names, so a landmark three hundred metres off is somewhere rather
+  than a bearing. The fast-travel shrines come with it: sixteen of them in Act 1, each with the
+  name the game gives it instead of "точка перехода" sixteen times over.
 - Dice rolls: what is being attempted, the skill, the number to beat and your bonus before
   you throw; what came up and whether it passed after. The outcome waits until the roll is
   actually settled, because until then you can still spend inspiration on it.
