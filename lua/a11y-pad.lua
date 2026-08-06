@@ -63,6 +63,7 @@ local PLURALS = {
     ["кампания"] = { "кампания", "кампании", "кампаний" },
     ["час"]      = { "час", "часа", "часов" },
     ["минута"]   = { "минута", "минуты", "минут" },
+    ["ход"]      = { "ход", "хода", "ходов" },
 }
 
 function M.plural(n, word)
@@ -2477,6 +2478,345 @@ function M.questTask(q)
     return best and best.text or nil
 end
 
+-- What a skill actually does ------------------------------------------------------------
+--
+-- The wheel names a slot and stops there. "Направленный луч" tells a player nothing about what
+-- it costs, how far it reaches, or what happens when it lands - and in a fight the wheel is the
+-- whole interface, so the choice was being made from memory of a name.
+--
+-- None of it is on the widget. It is in the stats entry behind the spell, measured live on
+-- 2026-08-06 rather than taken from a wiki:
+--
+--     Projectile_GuidingBolt
+--       DisplayName / Description   loca handles
+--       TargetRadius       18       the reach. `Range` is 0 on this spell and is *not* it
+--       UseCosts           ActionPoint:1;SpellSlotsGroup:1:1:1
+--       TooltipDamageList  DealDamage(4d6,Radiant)
+--       TooltipAttackSave  RangedSpellAttack
+--       Level 1            SpellSchool Evocation
+--
+-- The way in runs backwards from the widget. A wheel slot carries a loca handle for its name
+-- and no id at all, so the id has to come from the other side: every spell the character knows
+-- is in `SpellBook`, each with an id whose stats entry carries that same handle. One map per
+-- character, and a slot resolves by the name it already has.
+--
+-- The English words in these tables are a closed set the engine spells itself - thirteen damage
+-- types, eight schools, the attack and save kinds - so they are translated here rather than
+-- read from loca, which has no handle for "the word Radiant as it appears inside
+-- DealDamage(4d6,Radiant)".
+
+local DAMAGE_RU = {
+    Bludgeoning = "дробящий", Piercing = "колющий", Slashing = "рубящий",
+    Acid = "кислотой", Cold = "холодом", Fire = "огнём", Force = "силовой",
+    Lightning = "молнией", Necrotic = "некротический", Poison = "ядом",
+    Psychic = "психический", Radiant = "излучением", Thunder = "звуковой",
+}
+
+local ATTACK_RU = {
+    MeleeSpellAttack = "ближняя атака заклинанием",
+    RangedSpellAttack = "дальняя атака заклинанием",
+    MeleeWeaponAttack = "ближняя атака оружием",
+    RangedWeaponAttack = "дальняя атака оружием",
+    MeleeOffHandWeaponAttack = "атака второй рукой",
+    RangedOffHandWeaponAttack = "дальняя атака второй рукой",
+    MeleeUnarmedAttack = "безоружная атака",
+    Strength = "спасбросок Силы", Dexterity = "спасбросок Ловкости",
+    Constitution = "спасбросок Телосложения", Intelligence = "спасбросок Интеллекта",
+    Wisdom = "спасбросок Мудрости", Charisma = "спасбросок Харизмы",
+}
+
+local SCHOOL_RU = {
+    Abjuration = "ограждение", Conjuration = "вызов", Divination = "прорицание",
+    Enchantment = "очарование", Evocation = "воплощение", Illusion = "иллюзия",
+    Necromancy = "некромантия", Transmutation = "преобразование",
+}
+
+local COST_RU = {
+    ActionPoint = "действие", BonusActionPoint = "бонусное действие",
+    ReactionActionPoint = "реакция", Movement = "движение",
+    -- Named as charges, not as the thing they power: "Ярость, бонусное действие, ярость" is
+    -- what the plain word gave, and it reads as a stutter rather than as a price.
+    WildShape = "заряд дикого облика", Rage = "заряд ярости",
+    SorceryPoint = "единица чародейства",
+    KiPoint = "ци", SuperiorityDie = "кость превосходства",
+    BardicInspiration = "вдохновение барда", ChannelDivinity = "божественный канал",
+    ChannelOath = "канал клятвы", LayOnHandsCharge = "наложение рук",
+    DeflectMissiles = "отражение снарядов", WarPriestActionPoint = "действие жреца войны",
+    ArcaneRecoveryPoint = "магическое восстановление",
+    NaturalRecoveryPoint = "природное восстановление",
+}
+
+--- The character whose wheel this is.
+local function localChar()
+    local nav = _G.Nav
+    if nav ~= nil and nav.me ~= nil then
+        local me = soft(nav.me)
+        if me ~= nil then return me end
+    end
+    return soft(function() return Ext.Entity.GetLocalPlayer() end)
+end
+
+M.spellBy = nil        -- loca handle of the name -> stats id
+M.spellBookAt = nil
+
+--- Every spell the character knows, keyed by the handle its name is displayed under.
+---
+--- Rebuilt on a timer rather than cached forever: the book changes on levelling, on equipping
+--- and on swapping who is controlled, and fifteen entries is not worth being clever about.
+local function spellIndex()
+    local now = tonumber(soft(Ext.Utils.MonotonicTime)) or 0
+    if M.spellBy ~= nil and M.spellBookAt ~= nil and (now - M.spellBookAt) < 8000 then
+        return M.spellBy
+    end
+    local me = localChar()
+    if me == nil then return M.spellBy end
+    local book = soft(function() return me.SpellBook end)
+    local list = book ~= nil and soft(function() return book.Spells end) or nil
+    if list == nil then return M.spellBy end
+    local n = tonumber(soft(function() return #list end)) or 0
+    local by = {}
+    for i = 1, n do
+        local s = soft(function() return list[i] end)
+        local id = nil
+        if s ~= nil then
+            id = soft(function() return s.Id.OriginatorPrototype end)
+            if type(id) ~= "string" or id == "" then
+                id = soft(function() return s.Id.Prototype end)
+            end
+        end
+        if type(id) == "string" and id ~= "" then
+            local e = soft(Ext.Stats.Get, id)
+            local h = e ~= nil and soft(function() return e.DisplayName end) or nil
+            if type(h) == "string" and h ~= "" and by[h] == nil then by[h] = id end
+        end
+    end
+    M.spellBy, M.spellBookAt = by, now
+    return by
+end
+M.spellIndex = spellIndex
+
+function M.spellIdFor(handle)
+    if type(handle) ~= "string" or handle == "" then return nil end
+    local by = spellIndex()
+    return by ~= nil and by[handle] or nil
+end
+
+-- Weapon actions do not carry dice. `Zone_Cleave` says
+-- `DealDamage(MainMeleeWeapon/2, MainWeaponDamageType)`, because the numbers are whatever is in
+-- the character's hand - and read out raw that came out as "урон MainMeleeWeapon/2
+-- MainWeaponDamageType", which is worse than saying less.
+local WEAPON_DMG = {
+    MainMeleeWeapon = "оружия ближнего боя",
+    OffhandMeleeWeapon = "оружия во второй руке",
+    MainRangedWeapon = "дальнобойного оружия",
+    OffhandRangedWeapon = "дальнобойного оружия во второй руке",
+    UnarmedDamage = "без оружия",
+    ThrownDamage = "брошенного предмета",
+}
+
+--- "DealDamage(4d6,Radiant)" and the several of them a spell can carry.
+---
+--- Returns the whole phrase, "урон" included, because half weapon damage does not fit behind a
+--- fixed prefix: "половина урона оружия ближнего боя" and "урон 4к6 излучением" are different
+--- shapes, not one shape with a different tail.
+local function damageWords(s)
+    if type(s) ~= "string" or s == "" then return nil end
+    local out = {}
+    for dice, kind in s:gmatch("DealDamage%(([^,%)]+)%s*,?%s*([^%)]*)%)") do
+        dice = dice:gsub("%s+", "")
+        local half = false
+        local base = dice:match("^(.+)/2$")
+        if base ~= nil then half, dice = true, base end
+
+        local what
+        if dice:match("^%d+d%d+$") or dice:match("^%d+$") then
+            what = dice:gsub("d", "к")
+            local kw = DAMAGE_RU[kind]
+            if kw ~= nil then what = what .. " " .. kw end
+        else
+            -- A symbol rather than a number. Named if it is one of the handful the engine
+            -- uses, and called plainly "оружия" if it is not - never spelled out.
+            what = WEAPON_DMG[dice] or "оружия"
+            local kw = DAMAGE_RU[kind]
+            if kw ~= nil then what = what .. ", " .. kw end
+        end
+        out[#out + 1] = (half and "половина урона " or "урон ") .. what
+    end
+    if #out == 0 then return nil end
+    return table.concat(out, " и ")
+end
+M.damageWords = damageWords
+
+--- "ActionPoint:1;SpellSlotsGroup:1:1:1" - the action economy and the slot it burns.
+local function costWords(s)
+    if type(s) ~= "string" or s == "" then return nil end
+    local out = {}
+    for part in s:gmatch("[^;]+") do
+        local bits = {}
+        for b in part:gmatch("[^:]+") do bits[#bits + 1] = b end
+        local kind = bits[1]
+        if kind == "SpellSlotsGroup" then
+            -- The last number is the ring the slot comes from.
+            local lvl = tonumber(bits[#bits])
+            out[#out + 1] = lvl and ("ячейка " .. lvl .. " круга") or "ячейка заклинания"
+        elseif COST_RU[kind] ~= nil then
+            local n = tonumber(bits[2]) or 1
+            out[#out + 1] = n > 1 and (COST_RU[kind] .. " ×" .. n) or COST_RU[kind]
+        end
+    end
+    if #out == 0 then return nil end
+    return table.concat(out, ", ")
+end
+M.costWords = costWords
+
+--- What a spell is *for*, in one sentence, or nothing.
+---
+--- The mechanical facts say a great deal about Guiding Bolt and nothing at all about Rage,
+--- whose whole meaning is prose - which is exactly what the player found: "услышал что-то про
+--- бонусное действие, но не слишком понятно для чего она нужна".
+---
+--- Two texts exist and they are not interchangeable. Measured on `Shout_Rage`:
+---
+---   ExtraDescription  "Получить устойчивость к физическому урону и преимущество при
+---                      проверках и испытаниях силы."          ← what it is for
+---   Description       "Вы наносите дополнительно [1] оружием ближнего боя…"
+---                     with DescriptionParams = LevelMapValue(RageDamage)
+---
+--- **A sentence with an unfilled hole in it is not said at all.** `[1]` is substituted by the
+--- tooltip engine from `DescriptionParams`, which this layer cannot evaluate, and "вы наносите
+--- дополнительно оружием ближнего боя" is worse than silence. So the text is rejected when a
+--- placeholder survives, and the other one is tried instead.
+local function purpose(e, limit)
+    local function clean(h)
+        if type(h) ~= "string" or h == "" then return nil end
+        local t = unmarkup(loca(h))
+        if type(t) ~= "string" then return nil end
+        t = t:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+        if t == "" or t == h then return nil end
+        if t:find("%[%d+%]") then return nil end        -- a hole the tooltip engine fills
+        return t
+    end
+    -- The short "what it does" first; the numeric one only if that is missing or holed.
+    local t = clean(soft(function() return e.ExtraDescription end))
+          or clean(soft(function() return e.Description end))
+    if t == nil then return nil end
+    if #t <= (limit or 200) then return t end
+    -- Cut on a sentence if there is one inside the budget, on a word otherwise.
+    local cut = nil
+    for i = 1, #t do
+        local c = t:sub(i, i)
+        if (c == "." or c == "!" or c == "?") and i <= (limit or 200) then cut = i end
+    end
+    if cut ~= nil and cut > 40 then return t:sub(1, cut) end
+    local s = t:sub(1, limit or 200)
+    return (s:gsub("%s+%S*$", "") .. "…")
+end
+M.purpose = purpose
+
+--- "ApplyStatus(RAGE,100,10)" - the last number is how many turns it lasts.
+local function durationWords(s)
+    if type(s) ~= "string" then return nil end
+    local turns = s:match("ApplyStatus%([^,]+,%s*%d+%s*,%s*(-?%d+)%s*%)")
+    turns = tonumber(turns)
+    if turns == nil or turns <= 0 then return nil end
+    if turns >= 100 then return nil end          -- the engine's "until something else" numbers
+    return M.plural(turns, "ход")
+end
+M.durationWords = durationWords
+
+--- The hard facts about a spell, in the order a player choosing one needs them.
+---
+--- Costs and reach first, because in a fight those decide whether the slot can be used at all;
+--- what it does to whoever it hits after that. The prose description is deliberately not in
+--- here - it is long, it carries unresolved `[1]` placeholders the tooltip engine fills in, and
+--- it goes under the review cursor instead.
+function M.spellFacts(id)
+    local e = soft(Ext.Stats.Get, id)
+    if e == nil then return nil end
+    local f = function(name) return soft(function() return e[name] end) end
+    local out = {}
+
+    local cost = costWords(str(f("UseCosts")))
+    if cost ~= nil then out[#out + 1] = cost end
+
+    -- `TargetRadius` is the reach on every spell measured so far; `Range` was 0 on the one that
+    -- prompted this. Both are looked at, the larger wins, and a melee reach is named as such
+    -- rather than read out as "дальность 1 м".
+    local reach = tonumber(str(f("TargetRadius"))) or 0
+    local range = tonumber(str(f("Range"))) or 0
+    if range > reach then reach = range end
+    if reach > 0 then
+        if reach <= 2 then out[#out + 1] = "вплотную"
+        else out[#out + 1] = "дальность " .. math.floor(reach + 0.5) .. " м" end
+    end
+
+    local area = tonumber(str(f("AreaRadius"))) or 0
+    if area > 0 then out[#out + 1] = "область " .. math.floor(area + 0.5) .. " м" end
+
+    local how = ATTACK_RU[str(f("TooltipAttackSave"))]
+    if how ~= nil then out[#out + 1] = how end
+
+    local dmg = damageWords(str(f("TooltipDamageList")))
+    if dmg ~= nil then out[#out + 1] = dmg end
+
+    local lvl = tonumber(str(f("Level")))
+    local school = SCHOOL_RU[str(f("SpellSchool"))]
+    if lvl ~= nil and lvl > 0 then
+        out[#out + 1] = "заклинание " .. lvl .. " круга" .. (school and (", " .. school) or "")
+    elseif school ~= nil then
+        out[#out + 1] = "заговор, " .. school
+    end
+
+    local cd = str(f("Cooldown"))
+    if cd == "OncePerRest" then out[#out + 1] = "раз до отдыха"
+    elseif cd == "OncePerShortRest" then out[#out + 1] = "раз до короткого отдыха"
+    elseif cd == "OncePerTurn" then out[#out + 1] = "раз за ход" end
+
+    local dur = durationWords(str(f("TooltipStatusApply")))
+    if dur ~= nil then out[#out + 1] = dur end
+
+    -- What it is for, last and in a sentence of its own. The facts are what a player scans
+    -- past; this is the part they stay for, and on a spell like Rage it is the only part that
+    -- means anything. The whole text is under the review cursor either way.
+    local why = purpose(e, 180)
+
+    if #out == 0 and why == nil then return nil end
+    local line = table.concat(out, ", ")
+    if why ~= nil then line = (line ~= "" and (line .. ". ") or "") .. why end
+    return line
+end
+
+--- The same spell at length, for the review cursor: the facts, then the game's own prose.
+function M.spellLines(id)
+    local out = {}
+    local facts = M.spellFacts(id)
+    if facts ~= nil then out[#out + 1] = facts end
+    local e = soft(Ext.Stats.Get, id)
+    if e == nil then
+        if #out == 0 then return nil end
+        return out
+    end
+    -- Both texts, and in the order they answer questions in: what it is for, then the numbers.
+    -- Here the one with an unfilled `[1]` is kept rather than dropped - the review cursor is
+    -- read deliberately, a line at a time, and a sentence missing one value still says more
+    -- than no sentence. In the spoken line it is dropped; the two places want different things.
+    for _, field in ipairs({ "ExtraDescription", "Description" }) do
+        local h = soft(function() return e[field] end)
+        if type(h) == "string" and h ~= "" then
+            local text = unmarkup(loca(h))
+            if type(text) == "string" then
+                text = text:gsub("%[%d+%]", "…"):gsub("%s+", " ")
+                            :gsub("^%s+", ""):gsub("%s+$", "")
+                local dup = false
+                for i = 1, #out do if out[i] == text then dup = true end end
+                if text ~= "" and text ~= h and not dup then out[#out + 1] = text end
+            end
+        end
+    end
+    if #out == 0 then return nil end
+    return out
+end
+
 -- Radial menus ----------------------------------------------------------------------
 --
 -- Two of them, and the pad opens both: a bumper raises `ActionRadials` (the hotbar as three
@@ -2526,6 +2866,11 @@ local function findRadial(node)
         local p = props(o)
         if p.IsVisible == false then return end
         local cls = select(1, A.splitToString(A.realType(o)))
+        -- `pages` is a key, not a number to say out loud. Measured 2026-08-06 with the wheel
+        -- open: the tree holds **384** `ls.Radial` nodes and every one of them carries
+        -- `SelectedIndex`, so no test on the node tells the page the player is on from the 383
+        -- they are not. The count changes when the page does, which is all the key needs; what
+        -- it is not is a page number, and it used to be announced as one.
         if cls:find("Radial", 1, true) and not cls:find("RadialListItem", 1, true) then
             pages = pages + 1
             if best == nil or (current and bestPage ~= true) then
@@ -2582,17 +2927,58 @@ local function radialSlot(item)
     end
     if rec == nil then return nil end
 
-    local name = loca(rec.Name)
+    -- The action is not on the slot, it is one level inside it. Measured 2026-08-06 with the
+    -- wheel held open: the slot's own record carries `SlotType`, `SlotIndex`, `CanUse` and a
+    -- `Content` - and **no `Name` at all**. Everything worth saying is on `Content`, including
+    -- `PrototypeID`, which is the stats id itself, so no matching by name is needed:
+    --
+    --     Content.PrototypeID = Shout_Rage      Content.Name = hd0473bcf…  (the display name)
+    --     Content.MainCost = BonusAction        Content.IconName = Action_Barbarian_Rage
+    --     Content.PassiveName = NonLethal       on a passive slot instead
+    --
+    -- The layer looked for `rec.Name`, which has never existed, so a slot was announced by
+    -- whatever the panel beside the wheel happened to say and nothing else.
+    local content = nil
+    if type(rec.Content) == "userdata" then
+        content = soft(function() return rec.Content:GetAllProperties() end)
+    end
+    if type(content) ~= "table" then content = {} end
+
+    local name = loca(content.Name or rec.Name)
     if type(name) ~= "string" or name == "" or name:find("^h%x") then name = nil end
     local parts = {}
     if name ~= nil then parts[#parts + 1] = name end
-    local cost = RADIAL_COST[str(rec.MainCost)]
-    if cost ~= nil then parts[#parts + 1] = cost end
+
+    -- Why it cannot be used, before what it does: in a fight that is the difference between a
+    -- slot worth hearing out and one to move past.
+    if rec.CanUse == false then parts[#parts + 1] = "недоступно" end
+
+    -- What it does. The facts already carry the cost, so the wheel's own one-word version is
+    -- only used when there is no stats entry behind the slot.
+    local id = str(content.PrototypeID)
+    if id == "" or id == "nil" then id = nil end
+    if id == nil then id = M.spellIdFor(str(content.Name or rec.Name)) end
+
+    local facts = id ~= nil and M.spellFacts(id) or nil
+    if facts == nil then
+        local passive = str(content.PassiveName)
+        if passive ~= "" and passive ~= "nil" then
+            id = passive
+            facts = "пассивное умение"
+        end
+    end
+    if facts ~= nil then
+        parts[#parts + 1] = facts
+    else
+        local cost = RADIAL_COST[str(content.MainCost or rec.MainCost)]
+        if cost ~= nil then parts[#parts + 1] = cost end
+    end
+
     if type(rec.Count) == "number" and rec.Count > 1 then
         parts[#parts + 1] = rec.Count .. " шт."
     end
     if #parts == 0 then return nil end
-    return table.concat(parts, ", "), rec
+    return table.concat(parts, ", "), rec, id
 end
 M.radialSlot = radialSlot
 
@@ -2636,7 +3022,7 @@ function M.radialState(widget)
     local st = { page = page, pages = pages, count = #items,
                  index = (idx ~= nil and idx >= 0) and (idx + 1) or nil }
     if st.index ~= nil and items[st.index] ~= nil then
-        st.text, st.rec = radialSlot(items[st.index])
+        st.text, st.rec, st.spell = radialSlot(items[st.index])
     end
     -- The panel is the other half of the answer, and for the shortcut wheel it is the only
     -- one: its slots carry no record, only a name like ShortCutCharacterSheet.
@@ -2668,15 +3054,26 @@ function M.radialTick(ws)
 
     local st = M.radialState(widget)
     if st == nil then return true end
-    M.lines, M.linesFrom = st.info, "screen"
+    -- Under the review cursor: the game's own prose about the spell first, then whatever the
+    -- panel beside the wheel says. The spoken line has to stay short enough to hear between two
+    -- turns of the stick, so the long form lives on PageUp and PageDown instead of in it.
+    local lines = st.info
+    if st.spell ~= nil then
+        local sl = M.spellLines(st.spell)
+        if sl ~= nil then
+            lines = {}
+            for i = 1, #sl do lines[#lines + 1] = sl[i] end
+            for i = 1, #st.info do lines[#lines + 1] = st.info[i] end
+        end
+    end
+    M.lines, M.linesFrom = lines, "screen"
 
     local pageKey = name .. "|" .. tostring(st.page) .. "|" .. tostring(st.count)
     if pageKey ~= M.radialPage then
         M.radialPage = pageKey
         local parts = { M.RADIAL_WIDGETS[name] }
-        if st.pages ~= nil and st.pages > 1 then
-            parts[#parts + 1] = "страница " .. tostring(st.page) .. " из " .. st.pages
-        end
+        -- No page number. See findRadial: the number that used to be said here counted 384
+        -- controls the player has no way to be on.
         if st.count > 0 then parts[#parts + 1] = M.plural(st.count, "пункт") end
         pend(table.concat(parts, ", "))
     end
