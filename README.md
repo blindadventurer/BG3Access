@@ -99,6 +99,34 @@ powershell -File tools\push-lua.ps1 -Name a11y-pad     # push one
 The push copies into the running game's Script Extender folder and asks the live layer to
 re-read it — no repack, no restart.
 
+## Running native plugins alongside this
+
+Nothing here needs it, and it is written down because getting it wrong takes the layer with it.
+
+Native BG3 plugins are DLLs injected into the game process. The usual loader for them,
+kassent's Native Mod Loader, is a `DWrite.dll` proxy — and so is the Script Extender this layer
+depends on. Two of those in `bin\` is the known conflict: one of them does not load, and the
+workarounds all end with the extender half-broken.
+
+[Yet Another BG3 Native Mod Loader](https://github.com/MolotovCherry/Yet-Another-BG3-Mod-Loader)
+does not proxy anything — it injects from outside — so it and the extender coexist. Measured on
+this machine, 2026-08-06: game up, loader in the process (`Running Loader by Cherry v0.1.0`),
+`boot.json` reporting `state=running` with all six of our modules loaded. No conflict.
+
+- Tools (`bg3_injector.exe`, `bg3_watcher.exe`, `loader.dll`) → `<game>\bin\NativeModLoader\`.
+  From that folder the game root is found on its own, but `install_root` in the config is
+  written as the default Steam path and needs correcting on a machine like this one where the
+  game is on another drive.
+- Plugins and config → `%LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Plugins\`, **not**
+  `bin\NativeMods\`. `config.toml` and a `logs\` folder appear there on first run.
+- The injector is one-shot: start the game, then run it. The watcher is the same thing left
+  running in the background. The autostart variant edits the registry; this machine does not
+  use it.
+
+**This is a door to native plugins only.** Ordinary `.pak` mods are a different problem, and
+Patch 8 still refuses the ones that come from outside — which is why this layer is grafted into
+a module the game already loads rather than shipped as a pak.
+
 ## Dependencies not in this repo
 
 - **LSLib / Divine** → `tools/lslib/`, from https://github.com/Norbyte/lslib/releases.
