@@ -747,6 +747,33 @@ local function sayLine(delta)
     say(M.lines[i] .. ", " .. i .. T" of " .. n)
 end
 
+--- Say how big a list is and read its first entry - never the list.
+---
+--- The world reader has worked this way from the start (see "what is deliberately absent" on
+--- M.KEYS), and the player's instruction on 2026-08-08 was that a screen is no different:
+--- emptying twenty entries into somebody's ear is not information, because it cannot be
+--- remembered and cannot be stopped, and the one that mattered is somewhere in the middle. The
+--- listener sets the pace with PageUp/PageDown, or with the d-pad where the game owns the list.
+---
+--- One utterance and not two. The speech bridge is a file rewritten whole, so a second say() in
+--- the same tick erases the first (§G2) - the shape and the first line travel together or the
+--- shape is never heard at all.
+---
+--- `head` is optional and is only worth passing when the list has a name the player did not
+--- just say themselves: the screen's title is worth hearing, "details" is not - they pressed
+--- the key that means details.
+local function sayList(head)
+    local n = #M.lines
+    if n == 0 then
+        say(head ~= nil and (head .. T", empty") or T"no lines")
+        return
+    end
+    M.cursor = 1
+    local shape = M.plural(n, "line")
+    if head ~= nil then shape = head .. ", " .. shape end
+    say(shape .. ". " .. M.lines[1] .. ", 1" .. T" of " .. n)
+end
+
 --- In a session the review cursor walks the world instead of a screen: there is no panel to
 --- read, and the list a player needs is the one of things standing around them.
 ---
@@ -807,12 +834,14 @@ local function perform(cmd)
         local lines = M.detailsLines()
         if lines == nil then say(T"No details") return end
         M.lines, M.cursor, M.linesFrom = lines, 0, "details"
-        say(table.concat(lines, ". "))
+        -- No head: the player pressed the details key, so naming the list back to them spends
+        -- a word on something they already know.
+        sayList(nil)
     elseif cmd == "summary" then
         local lines = M.summaryLines()
         if lines == nil then perform("read") return end
         M.lines, M.cursor, M.linesFrom = lines, 0, "summary"
-        say(table.concat(lines, ", "))
+        sayList(nil)
     elseif cmd == "range" then
         -- How far "around me" reaches - the question a player exploring blind asks most
         -- often, which is why it sits on a key of its own. On a screen the key keeps its old
@@ -851,7 +880,9 @@ local function perform(cmd)
             return
         end
         M.lines, M.cursor, M.linesFrom = M.linesOf(a), 0, "screen"
-        say(table.concat(M.lines, ". "))
+        -- The screen's title is worth the word: this key can arrive on a panel the player did
+        -- not open deliberately, and "which screen is this" is the first thing to answer.
+        sayList(screenTitle(a))
     elseif cmd == "where" then
         -- Where you are, largest first: the screen, the section of it, the control. The old
         -- wording said the widget's internal name ("Экран CharacterCreation_c") and took the
@@ -1779,15 +1810,23 @@ function M.contextTick(ws)
         return false
     end
 
-    -- Opened: the whole list, once. It is short - three or four rows on a door - and hearing it
-    -- whole is the difference between a menu and a wall.
+    -- Opened: how many actions there are, and nothing else.
+    --
+    -- This used to read the whole menu out, on the argument that three or four rows is short
+    -- enough to hear whole. The argument does not survive the rule: a list read at somebody is
+    -- a list they have to remember, and this one is *already* walkable - the game owns the menu
+    -- and moves through it with the d-pad, and the branch below names each row as the player
+    -- arrives on it. So the count is the only thing here that stepping cannot tell them.
+    --
+    -- The row under the cursor is not lost by this: M.ctxFocus starts nil, so the very next
+    -- pass reads whatever the menu opened on, in its own utterance a tick later.
     if not M.ctxOpen then
         M.ctxOpen = true
         local items = ctxStrings(menu)
         M.ctxItems = items
         M.ctxFocus = nil
         if #items > 0 then
-            say(T"Actions: " .. table.concat(items, ", "))
+            say(T"Actions" .. ", " .. #items)
         else
             say(T"Actions, empty")
         end
