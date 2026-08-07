@@ -65,6 +65,7 @@ local PLURALS = {
     ["минута"]   = { "минута", "минуты", "минут" },
     ["ход"]      = { "ход", "хода", "ходов" },
     ["предмет"]  = { "предмет", "предмета", "предметов" },
+    ["абзац"]    = { "абзац", "абзаца", "абзацев" },
     ["заклинание"] = { "заклинание", "заклинания", "заклинаний" },
 }
 
@@ -636,6 +637,10 @@ M.SCREEN_TITLES = {
     -- there said "Игра. Игра." and never the word the player pressed to get there.
     Options_c = "Параметры",
     Options = "Параметры",
+    -- A book holds no text in its tree at all - `ls.LSBook` lays the page out itself - so
+    -- there is no first string for the rule to take.
+    Book_c = "Книга",
+    Book = "Книга",
 }
 
 local function screenTitle(a)
@@ -2314,6 +2319,13 @@ function M.linesOf(a)
         local lines = soft(function() return M.panelLines(a.node) end)
         if lines ~= nil and #lines > 0 then return lines end
     end
+    -- A book is the extreme of the same thing: its tree holds no strings whatsoever, and all
+    -- of it is one property on the record. So a refresh of the review cursor - Home, or a
+    -- screen change - rebuilds the text rather than emptying it.
+    if a.node ~= nil and M.BOOK_WIDGETS ~= nil and M.BOOK_WIDGETS[str(a.name)] then
+        local lines = soft(function() return M.bookLines(a.node) end)
+        if lines ~= nil and #lines > 0 then return lines end
+    end
     return a.texts or {}
 end
 
@@ -2375,6 +2387,10 @@ local function unmarkup(s)
     s = s:gsub("<[Bb][Rr]%s*/?>", ". ")
     s = s:gsub("<[^<>]->", "")
     s = s:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+    -- An ellipsis is one mark and not two full stops, and it has to become one *before* the
+    -- doubled-stop cleanup below or that rule eats it: a letter that reads «наша любовь еще
+    -- совсем юна… станешь ли ты укорять меня» came out as «юна.. станешь».
+    s = s:gsub("%.%.%.", "…")
     s = s:gsub("%.%s*%.", ".")
     if s == "" then return nil end
     return s
@@ -3881,6 +3897,124 @@ function M.levelUpTodo(widgetNode)
 
     if #out == 0 then return nil end
     return out
+end
+
+-- Books, notes and letters -------------------------------------------------------------
+--
+-- The one screen in the game whose whole content is a single property, and which was silent
+-- for exactly that reason. `Mods/MainUI/GUI/Pages/Book_c.xaml` is nine tenths page-turning
+-- animation and one line that matters:
+--
+--     <ls:LSBook x:Name="BookMain" Text="{Binding BookFullText}" .../>
+--
+-- `ls.LSBook` lays the text out into pages itself, so the widget tree holds no strings at
+-- all - a walk of it finds an empty box - and the text is not paginated in the model either:
+-- `BookFullText` is the whole thing, however many pages the game draws it across. Which means
+-- a reader does not have to turn pages to read a book, and does not have to know how.
+--
+-- The record carries the rest of what is worth saying: `SourceItem` is the item the book was
+-- opened from, and its `Name` is the title; `BookType`, `Edition` and `IllustrationNames`
+-- are there and say nothing a listener wants.
+--
+-- Larian's line breaks are `<br>`, singly between the lines of a list and doubled between
+-- paragraphs. Both are reading units - a list item is one, and so is a signature - so the
+-- text is split on every one of them rather than on the doubles.
+
+M.BOOK_WIDGETS = { Book_c = true, Book = true }
+
+--- The book as lines to read one at a time.
+local function bookParagraphs(text)
+    if type(text) ~= "string" or text == "" then return nil end
+    local out = {}
+    for piece in (text .. "<br>"):gmatch("(.-)<[Bb][Rr]%s*/?>") do
+        local s = unmarkup(piece)
+        if type(s) == "string" and s ~= "" then
+            -- A paragraph longer than a breath is cut at a sentence end. 600 bytes is about
+            -- 300 Cyrillic letters, which is where a single utterance stops being something
+            -- a listener can hold and starts being something they have to replay.
+            while #s > 600 do
+                local cut = nil
+                for p in s:gmatch("()[%.%!%?%…]%s") do
+                    if p > 600 then break end
+                    cut = p
+                end
+                if cut == nil then break end
+                out[#out + 1] = s:sub(1, cut)
+                s = (s:sub(cut + 1):gsub("^%s+", ""))
+            end
+            if s ~= "" then out[#out + 1] = s end
+        end
+    end
+    if #out == 0 then return nil end
+    return out
+end
+M.bookParagraphs = bookParagraphs
+
+--- What the book is called, taken from the item it was opened from.
+local function bookTitle(d)
+    local v = d.SourceItem
+    if type(v) ~= "userdata" then return nil end
+    local p = soft(function() return v:GetAllProperties() end)
+    if type(p) ~= "table" then return nil end
+    local n = loca(str(p.Name))
+    if type(n) ~= "string" or n == "" or n:find("^h%x") or n:find("^ls::") then return nil end
+    return n
+end
+
+--- The title and then the text, as the review cursor walks them.
+function M.bookLines(node)
+    local d = dataOf(node)
+    if type(d) ~= "table" then return nil end
+    local paras = bookParagraphs(str(d.BookFullText))
+    if paras == nil then return nil end
+    local title = bookTitle(d)
+    local out = {}
+    if title ~= nil then out[1] = title end
+    for i = 1, #paras do out[#out + 1] = paras[i] end
+    return out, title
+end
+
+M.bookKey = nil
+
+--- An open book takes the pass whole.
+---
+--- Not because it is urgent the way a roll is, but because while one is up there is nothing
+--- else on the screen and nothing else the buttons do. The first paragraph is read with the
+--- title, and the rest is under the review cursor - which is also why the text is *not* read
+--- out in one utterance: a book is several minutes of speech, and a listener needs to stop,
+--- go back a paragraph, and hear one again.
+function M.bookTick(ws)
+    local node = nil
+    for i = #ws, 1, -1 do
+        local w = ws[i]
+        if w.visible ~= false and M.BOOK_WIDGETS[str(w.name)] then node = w.node break end
+    end
+    if node == nil then
+        M.bookKey = nil
+        return false
+    end
+
+    local lines, title = M.bookLines(node)
+    if lines == nil then return false end
+    -- The keys belong to the book while it is open: PageUp and PageDown walk its paragraphs
+    -- and not the barrels standing around the character.
+    M.screenUp = true
+
+    local key = tostring(title) .. "|" .. #lines .. "|" .. tostring(lines[#lines])
+    if key == M.bookKey then return true end
+    M.bookKey = key
+
+    M.lines, M.linesFrom = lines, "book"
+    local start = (title ~= nil) and 2 or 1
+    M.cursor = start
+    -- Quoted rather than after a colon: half the titles in this game have a colon of their
+    -- own, and «Книга: Талис: прорицание без магии» is a stutter a listener has to unpick.
+    local head = (title ~= nil) and ("Книга «" .. title .. "»") or "Записка"
+    local rest = #lines - start
+    if rest > 0 then head = head .. ", ещё " .. M.plural(rest, "абзац") end
+    _P("[pad] book: " .. tostring(title) .. ", " .. #lines .. " lines")
+    say(head .. ". " .. tostring(lines[start]))
+    return true
 end
 
 -- The character panel: what you carry, what you wear, what is on you ------------------
@@ -5986,6 +6120,14 @@ local function readerTick()
     -- Somebody talking in the world. Not a pass of its own: a remark does not stop the player
     -- doing what they were doing, so this speaks and lets the rest of the pass run.
     soft(function() return M.subtitleTick(ws) end)
+
+    -- An open book takes the pass whole: while one is up there is nothing else on the screen
+    -- and nothing else the buttons do. Ahead of the tutorial and the box only in the sense
+    -- that it never competes with them - a book cannot be open at the same time as either.
+    if soft(function() return M.bookTick(ws) end) then
+        throttle(micros() - t0)
+        return
+    end
 
     -- A tutorial modal takes the pass whole, and takes it before the confirmation box does,
     -- because on the pad it is one: it holds the controls until it is answered with A, and

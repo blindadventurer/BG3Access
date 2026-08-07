@@ -261,6 +261,20 @@ category instead.
   («+1d4»), and when there is nothing left to apply. The d-pad moves through those, and each
   change is read as you make it. The outcome waits until the roll is
   actually settled, because until then you can still spend inspiration on it.
+- **Books, notes and letters — all of them, whole.** Opening one used to be silence: the page
+  is drawn by a control that lays the text out itself, so the widget holds no words at all and
+  no depth of searching would have found any. The whole text is a single property on the model
+  behind it — and it is not paginated there, however many pages the game draws it across, so
+  you never have to turn one.
+
+  A book announces itself by name and reads its first paragraph: «Книга "Талис: прорицание без
+  магии", ещё 8 абзацев», then the text. **Page Down** takes the next paragraph, **Page Up**
+  the previous, each with its number, so you can stop, go back and hear one again. A list
+  inside a note is read line by line, and a signature is its own line. It is not read out in
+  one breath on purpose: a book is minutes of speech, and there has to be a way back.
+
+  While a book is open it owns the keys — Page Up and Page Down walk its paragraphs and not
+  the barrels standing around you.
 - Tutorial hints, with the tag markup taken out.
 - Combat: whose turn it is, what you are aiming at, and what the game says about the move
   under the cursor.
