@@ -2,7 +2,8 @@
 #
 # Everything here fails silently on its own: the game has to be found and carry the Script
 # Extender, a pad has to be plugged in for BG3 to raise the interface the layer reads, the
-# layer has to be grafted onto a loaded module, the client bootstrap has to have run,
+# layer has to be installed AND switched on - two separate facts - the client bootstrap has to
+# have run,
 # something has to be turning the speech bridge into speech, and something has to be watching
 # that that thing is still there at all. One line each, and the failing
 # one names its own fix - this page is what a player is asked for when it has gone quiet, so
@@ -53,14 +54,49 @@ Line "controller" ([bool]$pad) $(if ($pad) { $pad[0] } else {
 $game = Get-Process bg3_dx11, bg3 -ErrorAction SilentlyContinue
 Line "game" ([bool]$game) $(if ($game) { "running, pid $($game[0].Id)" } else { "not running" })
 
-# 2. the install itself. Not a pak and not a modsettings entry - Patch 8 keeps neither (see
-#    graft-mod.ps1); the layer lives in the ScriptExtender folder of a module already loaded.
-if ($graft -and (Test-Path (Join-Path $graft "Config.json"))) {
+# 2. the install itself, by either route - and they are exclusive, so this reports which one is
+#    in use rather than assuming. As a mod: a pak in Mods\ AND an entry in modsettings.lsx,
+#    because the two are separate facts and "installed but switched off" is a real state a
+#    player can be in and cannot see. As a graft: the ScriptExtender folder inside a loaded
+#    module, which needs no mod at all.
+#
+#    This used to check the graft alone and call anything else "missing - run install.bat",
+#    which after the move to a real mod meant telling a player with a working layer that they
+#    had no install. A status page that is wrong is worse than one that is absent.
+$pakFile  = Join-Path $appData "Mods\BG3Access.pak"
+$settings = Join-Path $appData "PlayerProfiles\Public\modsettings.lsx"
+$enabled  = $false
+if (Test-Path $settings) {
+    try {
+        [xml]$ms = Get-Content $settings -Raw -Encoding UTF8
+        $enabled = $null -ne $ms.SelectSingleNode(
+            "//node[@id='ModuleShortDesc'][attribute[@id='Folder'][@value='BG3Access']]")
+    } catch { }
+}
+$grafted = $graft -and (Test-Path (Join-Path $graft "Config.json"))
+
+if (Test-Path $pakFile) {
+    $pk = Get-Item $pakFile
+    if ($enabled) {
+        Line "installed as a mod" $true ("Mods\BG3Access.pak, {0:N0} KB, {1:yyyy-MM-dd HH:mm}" -f ($pk.Length / 1KB), $pk.LastWriteTime)
+    } else {
+        Line "installed as a mod" $false ("the pak is there but switched off - " +
+            "powershell -File tools\register-mod.ps1 -Pak BG3Access.pak")
+    }
+} elseif ($grafted) {
     $files = Get-ChildItem $graft -Recurse -File
     $newest = ($files | Sort-Object LastWriteTime -Descending | Select-Object -First 1).LastWriteTime
-    Line "graft onto $HostModule" $true ("{0} files, newest {1:yyyy-MM-dd HH:mm}" -f $files.Count, $newest)
+    Line "grafted onto $HostModule" $true ("{0} files, newest {1:yyyy-MM-dd HH:mm}" -f $files.Count, $newest)
 } else {
-    Line "graft onto $HostModule" $false "missing - run install.bat"
+    Line "install" $false "neither a pak nor a graft found - run install.bat"
+}
+
+# Both at once is not a worse install, it is a broken one: the extender is handed the same
+# ModTable twice. Silence here would leave the player with a layer that behaves oddly for a
+# reason nothing on this page mentions.
+if ((Test-Path $pakFile) -and $grafted) {
+    Line "CONFLICT" $false ("both the pak and the graft are installed - they declare the same " +
+        "ModTable. Remove one: tools\graft-mod.ps1 -Uninstall")
 }
 
 # 3. what the bootstrap wrote the last time the client state was built. That happens at launch
