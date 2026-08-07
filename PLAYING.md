@@ -248,13 +248,12 @@ everything else.
 before the game ever sees it, so nothing on it worked for anyone using NVDA or JAWS. If you find
 a key in this list that does nothing, that is worth reporting: it is the same class of bug.*
 
-**Pause** — where you are: the screen, the section of it, the control under the cursor. Not
-every keyboard has this key, and on the ones that do it is usually outside the six-key block
-with Home and End.
+*There used to be a "where am I" key on Pause. It is gone: Pause is not in the six-key block
+with Home and End and many keyboards do not have it at all, so it had never worked. Out in the
+world the **places** category answers the same question; on a panel, the screen names itself
+when you arrive on it and the tab and the control under the cursor are said as they change.*
 
-**Alt + Pause** — stop walking.
-
-**The left stick** — also stops walking. Pushing the stick is the reflex, and the layer treats
+**The left stick** — stops walking. Pushing the stick is the reflex, and the layer treats
 it as one: the moment you steer for yourself, it stops steering for you. It keeps working for as
 long as the character might still be running, including after the layer has given up on a long
 walk and said so — that used to be exactly when it stopped working.

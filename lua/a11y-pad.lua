@@ -295,8 +295,15 @@ M.KEYS = {
     END = "quest",                          -- the objective, or the summary of the screen
                                             -- with Alt: how the fight is going
     DELETE = "range", DEL = "range",        -- how far the scanner looks / details of a screen
-    PAUSE = "where",                        -- unconfirmed: see above
+                                            -- with Alt: where you are
 }
+-- Pause was `where`, and Pause is the third key in a row to turn out not to exist for the player
+-- it was written for: their keyboard has six in that block - PageUp, PageDown, Home, End,
+-- Delete, Insert - and Pause is not among them. On the keyboards that do carry it, it sits away
+-- from those six and behind Fn as often as not.
+--
+-- So the layer now uses five keys and their Alt forms, and that is the whole surface. Ten
+-- commands is not a limit worth fighting: a key nobody can press is worth less than no key.
 
 -- Alt is a modifier here and a game key everywhere else - BG3 highlights loot while it is
 -- held - so it is watched, never suppressed.
@@ -327,9 +334,9 @@ local ALT_CMD = { prev = "catPrev", next = "catNext" }
 -- Written this way rather than in the table above because "goto" is a Lua keyword and cannot
 -- be a key in a constructor.
 ALT_CMD["progress"] = "goto"
--- Stopping by hand, kept as a fallback to the stick. It is on "where am I" because that is the
--- other key about standing still, and because it is not one that is pressed by accident.
-ALT_CMD["where"] = "stop"
+-- Stopping by hand is gone with Pause and is not being rehoused. The left stick has done it
+-- since the stick fix (M.axisTick), that is the reflex a player actually reaches for, and a
+-- second way to do it was already described two comments above as no longer a key at all.
 -- How the fight is going, on the modifier of the key that already asks "what does all this add
 -- up to". It took this slot because Insert - where it used to live - turned out to be NVDA's
 -- own modifier and reached the layer never.
@@ -865,11 +872,6 @@ local function perform(cmd)
         -- often, which is why it sits on a key of its own. On a screen the key keeps its old
         -- meaning, the details of what is selected: there distances mean nothing.
         if nav ~= nil then nav.radiusStep(1) else perform("details") end
-    elseif cmd == "stop" then
-        -- Alt+Pause: the deliberate stop, kept because the stick is a reflex and a reflex can
-        -- be wrong about whether it worked. On a screen there is nothing walking, so the key
-        -- keeps its plain meaning there.
-        if nav ~= nil then nav.stop() else perform("where") end
     elseif cmd == "stopWalk" then
         -- The stick was pushed while the layer had the character walking somewhere. Taken from
         -- _G.Nav rather than navMode(): whatever is on screen, the character is moving and the
@@ -901,21 +903,17 @@ local function perform(cmd)
         -- The screen's title is worth the word: this key can arrive on a panel the player did
         -- not open deliberately, and "which screen is this" is the first thing to answer.
         sayList(screenTitle(a))
-    elseif cmd == "where" then
-        -- Where you are, largest first: the screen, the section of it, the control. The old
-        -- wording said the widget's internal name ("Экран CharacterCreation_c") and took the
-        -- focus from the first node in the tree flagged IsFocused, which on a screen with a
-        -- summary panel is a line of the summary - so it answered "Интеллект, 10" while the
-        -- player stood on the origin carousel.
-        local a = M.active(120, 2500)
-        if a == nil then say(T"This screen cannot be read") return end
-        local parts = { screenTitle(a) }
-        if M.tab ~= nil then parts[#parts + 1] = M.tab end
-        local f = soft(function() return M.widgetFocus(a.node) end)
-        local what = (f ~= nil and M.focusText(f)) or (a.focus and a.focus.text)
-        if what ~= nil then parts[#parts + 1] = what end
-        parts[#parts + 1] = M.plural(#a.texts, "line")
-        say(table.concat(parts, ", "))
+    -- `where` used to be here - the screen, its section and the control under the cursor, said
+    -- largest first. It lived on Pause, and the player has no Pause key, so it had never once
+    -- been heard. Rather than take a slot off something in daily use, it is gone, and both
+    -- halves of what it answered are already answered:
+    --
+    --   out in the world, by the "локации" category, which is where the player says they look;
+    --   on a screen, by the arrival line (title and how many lines) and by the tab and the
+    --   focused control, both of which are announced as they change.
+    --
+    -- What is left over is saying those again on demand, and repeating was retired the same day
+    -- for the same reason - nobody asked for it. Removed 2026-08-08.
     elseif cmd == "fight" then
         -- Only what a list cannot answer: whose turn it is, how you are, how many are left.
         -- Who they individually are is the "враги" category, walked one at a time like
