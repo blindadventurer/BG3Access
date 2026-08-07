@@ -1654,15 +1654,50 @@ function M.contextPopup(ws)
 end
 
 --- A descendant with this exact Name, breadth of the search bounded rather than the whole tree.
-function M.namedNode(node, name, maxDepth)
-    local found = nil
+---
+--- Bounded by node count as well as by depth since 2026-08-07. A *hit* is cheap because the
+--- walk stops on it; a **miss** costs every node within the depth, and on a four-thousand-node
+--- screen six misses in a row is a visible stutter. The cap is above any screen measured so
+--- far, so it changes no answer - it only puts a ceiling on the wrong one.
+M.NAMED_CAP = 6000
+
+function M.namedNode(node, name, maxDepth, cap, visibleOnly)
+    return (M.namedNodes(node, { name }, maxDepth, cap, visibleOnly) or {})[name]
+end
+
+--- Several of them, in one walk.
+---
+--- Reading a panel field by field is one walk per field, and they are the same walk. This
+--- stops as soon as every name asked for has been found.
+---
+--- `visibleOnly` prunes the branches the game has switched off, and on this screen that is the
+--- difference between a stutter and nothing at all: with a mod's card open the whole browse
+--- view - the list, the button strip, the filter sidebar - is still in the tree with
+--- `IsVisible` false, and it is most of the four thousand nodes. Off by default, because a
+--- caller looking for something inside a panel that is currently hidden is a real and
+--- deliberate thing to do.
+function M.namedNodes(node, names, maxDepth, cap, visibleOnly)
+    local want, left = {}, 0
+    for _, n in ipairs(names) do
+        if want[n] == nil then want[n] = true left = left + 1 end
+    end
+    local found, budget = {}, tonumber(cap) or M.NAMED_CAP
     local function rec(o, d)
-        if o == nil or found ~= nil or d > (maxDepth or 8) then return end
+        if o == nil or left <= 0 or budget <= 0 or d > (maxDepth or 8) then return end
         local ch, cn = A.kids(o)
         for i = 1, cn do
+            if left <= 0 or budget <= 0 then return end
+            budget = budget - 1
             local p = props(ch[i])
-            if str(p.Name) == name then found = ch[i] return end
-            rec(ch[i], d + 1)
+            if not (visibleOnly and p.IsVisible == false) then
+                local nm = str(p.Name)
+                if want[nm] and found[nm] == nil then
+                    found[nm] = ch[i]
+                    left = left - 1
+                    if left <= 0 then return end
+                end
+                rec(ch[i], d + 1)
+            end
         end
     end
     rec(node, 0)
@@ -5697,7 +5732,7 @@ end
 --- caption the player can see - so this is the screen answering "what can I press here"
 --- itself, with nothing hardcoded and nothing to keep up to date.
 function M.modPrompts(node)
-    local strip = M.namedNode(node, "BottomButtonsPanel", 8)
+    local strip = M.namedNode(node, "BottomButtonsPanel", 8, 3000, true)
     if strip == nil then return {} end
     -- Deduplicated by caption, because `A.kids` hands back the visual children and then the
     -- logical ones without merging them, and a button is in both - which is how the first
@@ -5744,7 +5779,12 @@ end
 
 --- The screen as it stands: which tab, which row, and what the account is allowed to do.
 function M.modState(node)
-    local list = M.namedNode(node, "ModList", 10)
+    -- One walk for both, pruned to what is on display. This runs on every pass of the reader
+    -- while the browse list is up, so what it does not do matters as much as what it does: an
+    -- unpruned pair of walks measured 14 ms against a 16 ms frame, which is the shape of every
+    -- performance mistake this layer has made.
+    local nodes = M.namedNodes(node, { "ModList", "accountStateLabel" }, 10, 3000, true)
+    local list = nodes.ModList
     if list == nil then return nil end
     local scr = dataOf(node) or {}
     local recs = recordsOf(list)
@@ -5756,7 +5796,7 @@ function M.modState(node)
     -- the difference between browsing and being able to install anything, and it is the one
     -- thing on this screen a player has to be told without asking.
     local account = nil
-    local label = M.namedNode(node, "accountStateLabel", 8)
+    local label = nodes.accountStateLabel
     if label ~= nil then
         local t = A.collectText(label, 20, 4)[1]
         if t ~= nil and A.looksLikeText(t) and t ~= "[ForceUpdate]" then account = t end
@@ -5803,13 +5843,44 @@ end
 --- than a breath at a sentence end.
 function M.modParagraphs(text)
     if type(text) ~= "string" or text == "" then return nil end
-    return bookParagraphs((text:gsub("[\r\n]+", "<br>")))
+    local paras = bookParagraphs((text:gsub("[\r\n]+", "<br>")))
+    if paras == nil then return nil end
+    -- Mod pages are written for eyes and rule themselves off with lines of dashes. Read out,
+    -- the first thing this card said was twenty-five hyphens; kept in the list, a third of the
+    -- paragraphs a player steps through are separators. A paragraph with no letter and no digit
+    -- in it - counting any byte outside ASCII as a letter, since `%w` does not - is a rule.
+    local out = {}
+    for i = 1, #paras do
+        if paras[i]:find("[%w\128-\255]") ~= nil then out[#out + 1] = paras[i] end
+    end
+    if #out == 0 then return nil end
+    return out
 end
 
---- Everything on the open card.
+-- Everything the card is made of, found in one walk instead of seven.
+local CARD_FIELDS = { "SelectedModName", "authorLabel", "versionValue", "lastUpdatedValue",
+                      "originalUploadValue", "enabledLabel", "tagsList", "modDescription" }
+
+--- Which mod the open card is about, cheaply.
+---
+--- `SelectedModName` sits four levels down, so this is a few dozen nodes - which matters
+--- because it runs on every pass while a card is up, and the card itself does not.
+function M.modCardName(node)
+    local n = M.namedNode(node, "SelectedModName", 5)
+    if n == nil then return nil end
+    local t = A.collectText(n, 10, 3)[1]
+    if t ~= nil and A.looksLikeText(t) then return t end
+    return nil
+end
+
+--- Everything on the open card. Expensive, and built once per card - see `modCardFor`.
 function M.modCard(node)
-    local function textOf(name, depth)
-        local n = M.namedNode(node, name, depth or 14)
+    -- Visible branches only, and capped. The card's own fields are visible by definition, and
+    -- the browse view behind it - list, buttons, filters - is switched off and is most of the
+    -- screen: 81 ms of walking on the build that shipped this an hour ago.
+    local nodes = M.namedNodes(node, CARD_FIELDS, 16, 3000, true)
+    local function textOf(name)
+        local n = nodes[name]
         if n == nil then return nil end
         local t = A.collectText(n, 40, 6)[1]
         if t == nil or not A.looksLikeText(t) or t == "[ForceUpdate]" then return nil end
@@ -5817,7 +5888,7 @@ function M.modCard(node)
     end
 
     local out = {
-        name      = textOf("SelectedModName", 8),
+        name      = textOf("SelectedModName"),
         author    = textOf("authorLabel"),
         version   = textOf("versionValue"),
         updated   = textOf("lastUpdatedValue"),
@@ -5825,7 +5896,7 @@ function M.modCard(node)
         enabled   = textOf("enabledLabel"),
     }
 
-    local tl = M.namedNode(node, "tagsList", 16)
+    local tl = nodes.tagsList
     if tl ~= nil then
         local tags = {}
         for _, r in ipairs(recordsOf(tl)) do
@@ -5834,7 +5905,7 @@ function M.modCard(node)
         if #tags > 0 then out.tags = tags end
     end
 
-    local d = M.namedNode(node, "modDescription", 16)
+    local d = nodes.modDescription
     if d ~= nil then
         local text = nil
         local p = props(d)
@@ -5864,11 +5935,28 @@ function M.modCardHead(card)
     return out
 end
 
+-- The card as built, kept until a different one is opened.
+--
+-- This is why the first build stuttered: `modCard` ran on every pass of the reader, and every
+-- pass was seven walks of a four-thousand-node widget plus a five-kilobyte string cut into
+-- paragraphs. A card does not change while it is open, and the name of the mod it is about is
+-- forty nodes away - so that is what the pass looks at, and the card is built the once.
+M.cardCache = nil
+
+function M.modCardFor(node, name)
+    name = name or M.modCardName(node)
+    if name == nil then return nil end
+    if M.cardCache ~= nil and M.cardCache.name == name then return M.cardCache.card end
+    local card = soft(function() return M.modCard(node) end)
+    M.cardCache = { name = name, card = card }
+    return card
+end
+
 --- What the review cursor walks: the page of mods, or the open card.
 function M.modLines(node)
     local scr = dataOf(node)
     if type(scr) == "table" and scr.InDetailsView == true then
-        local card = soft(function() return M.modCard(node) end)
+        local card = M.modCardFor(node)
         if card ~= nil then
             local out = M.modCardHead(card)
             for _, p in ipairs(card.paras or {}) do out[#out + 1] = p end
@@ -5885,18 +5973,20 @@ end
 
 --- Everything about the mod under the cursor, on demand.
 function M.modDetails(node)
-    local st = soft(function() return M.modState(node) end)
-    if st == nil then return nil end
     -- With a card open the question is about the mod and not about the page behind it, and
     -- the description is already under the review cursor - so this is the head of the card,
-    -- which is the part a listener wants repeated rather than walked.
-    if st.details then
-        local card = soft(function() return M.modCard(node) end)
+    -- which is the part a listener wants repeated rather than walked. Asked of the screen's
+    -- own model before anything is walked, so a card never pays for reading the list.
+    local scr = dataOf(node)
+    if type(scr) == "table" and scr.InDetailsView == true then
+        local card = M.modCardFor(node)
         if card ~= nil then
             local out = M.modCardHead(card)
             if #out > 0 then return out end
         end
     end
+    local st = soft(function() return M.modState(node) end)
+    if st == nil then return nil end
     local out = {}
     out[#out + 1] = (st.tab == "Installed") and T"Installed" or T"Browse"
     if st.count > 0 then out[#out + 1] = M.plural(st.count, "mod") end
@@ -5912,11 +6002,10 @@ M.modKey = nil
 
 --- Said when the cursor moves, and once when the screen comes up.
 function M.modTick(widget)
-    if not M.MOD_SCREENS[str(widget.name)] then M.modKey = nil return false end
-    local st = soft(function() return M.modState(widget.node) end)
-    if st == nil then return false end
-    -- Nothing to say while the page is being fetched, and the list underneath is the old one.
-    if st.updating then return false end
+    if not M.MOD_SCREENS[str(widget.name)] then
+        M.modKey, M.cardCache = nil, nil
+        return false
+    end
 
     -- Opening a card does not change the widget, so the review cursor would still be holding
     -- the page of mods while the player is standing in front of a description. Rebuilt on every
@@ -5926,13 +6015,19 @@ function M.modTick(widget)
             M.linesOf({ name = widget.name, node = widget.node, texts = {} }), 0, "screen"
     end
 
-    -- The card, while one is open. What is behind it has not changed and is not what the
-    -- player is looking at.
-    if st.details then
-        local card = soft(function() return M.modCard(widget.node) end)
-        local key = "card|" .. tostring(card ~= nil and card.name or "-")
+    -- The screen's own model first, and it is one property read: with a card open the list
+    -- behind it has not changed, is not what the player is looking at, and reading it anyway is
+    -- what made this stutter.
+    local scr = dataOf(widget.node)
+    if type(scr) == "table" and scr.IsUpdatingModList == true then return false end
+
+    -- The card, while one is open.
+    if type(scr) == "table" and scr.InDetailsView == true then
+        local name = M.modCardName(widget.node)
+        local key = "card|" .. tostring(name or "-")
         if key == M.modKey then return false end
         M.modKey = key
+        local card = M.modCardFor(widget.node, name)
         retakeLines()
         if card == nil then return false end
         for _, s in ipairs(M.modCardHead(card)) do pend(s) end
@@ -5943,6 +6038,10 @@ function M.modTick(widget)
         flush()
         return true
     end
+
+    -- No card, so the list is what the player is on and is worth the walk it costs.
+    local st = soft(function() return M.modState(widget.node) end)
+    if st == nil then return false end
 
     local rec = st.rec
     local key = tostring(st.tab) .. "|" .. tostring(st.index) .. "|" .. tostring(st.count) ..
