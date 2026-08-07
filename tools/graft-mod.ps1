@@ -1,9 +1,13 @@
 # Graft the layer onto a module the game already loads.
 #
-# Patch 8 will not take the mod the normal way: a pak in %LOCALAPPDATA%\...\Mods\ is not even
-# listed among the modules the game knows (AvailableMods stays at the 16 base ones), and the
-# entry written into modsettings.lsx is stripped on every launch. The load order belongs to
-# the in-game mod manager and nothing outside it is honoured.
+# CORRECTED 2026-08-07: the claim that stood here - "Patch 8 will not take the mod the normal
+# way, a pak in %LOCALAPPDATA%\...\Mods\ is not even listed and the modsettings.lsx entry is
+# stripped on every launch" - was wrong, and it is why this file exists. A third-party pak was
+# found loading from that exact folder while ours was ignored beside it. The game was refusing
+# our module, not outside modules: meta.lsx was in the pre-Patch-7 format. See build-mod.ps1.
+#
+# The graft is still what the layer runs from, and is still the right fallback for a machine
+# where the pak route fails. It is no longer the only way in.
 #
 # But the Script Extender does not need a *mod* - it needs a folder. It reads
 # Mods/<Folder>/ScriptExtender/Config.json for every module in the load order, through the

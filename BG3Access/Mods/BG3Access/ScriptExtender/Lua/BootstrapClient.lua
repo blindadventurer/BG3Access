@@ -119,12 +119,21 @@ local function report(state, extra)
         game = soft(Ext.Utils.GameVersion),
         listed = false,
     }
+    -- Every module the game admits to, by name, and not just our own.
+    --
+    -- This used to count the load order and look for one name in it. Recording the whole list
+    -- costs nothing and answers a question that a count cannot: *which* modules are loaded. That
+    -- is how a mod that will not load gets diagnosed from outside the game - the same way the
+    -- meta format was found, by holding our module up against one the game accepts - and it is
+    -- the only readout there is for whether a mod the player installed actually took.
     local order = soft(Ext.Mod.GetLoadOrder)
     if type(order) == "table" then
         out.loadOrder = #order
+        out.mods = {}
         for _, uuid in ipairs(order) do
             local m = soft(Ext.Mod.GetMod, uuid)
             local name = m and m.Info and m.Info.Name
+            out.mods[#out.mods + 1] = name or tostring(uuid)
             if name == "BG3Access" then out.listed = true end
         end
     end

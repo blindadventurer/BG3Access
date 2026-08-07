@@ -70,24 +70,50 @@ whatever the player is looking at, in all fifteen of the game's languages.
 
 ## Install
 
-Patch 8 does not accept a mod from outside its own manager — a `.pak` in
-`%LOCALAPPDATA%\...\Mods\` is never listed, and a `modsettings.lsx` entry is stripped on
-the next launch. So installing means **grafting**: the layer's `ScriptExtender` folder is
-placed inside a module the game already loads (`GustavX`), where the Script Extender
-finds it anyway. `graft-mod.ps1` adds only new paths — nothing of the game is replaced,
-and `-Uninstall` takes them away again.
+The layer installs as an ordinary mod: `BG3Access.pak` in `%LOCALAPPDATA%\...\Mods\`, enabled
+in `modsettings.lsx`.
 
 ```powershell
-powershell -File tools\build-mod.ps1        # stage lua\ into the mod tree, then graft
-powershell -File tools\mod-status.ps1       # after restarting the game: did it take?
+powershell -File tools\build-mod.ps1 -Pak -InstallPak    # build and install as a mod
+powershell -File tools\register-mod.ps1 -Pak BG3Access.pak   # switch it on
+powershell -File tools\mod-status.ps1                    # after restarting: did it take?
 ```
+
+This README said the opposite until 2026-08-07 — "Patch 8 does not accept a mod from outside
+its own manager, a `.pak` in `Mods\` is never listed and a `modsettings.lsx` entry is stripped
+on the next launch" — and that was wrong in a way worth recording, because it shaped the whole
+project. Patch 8 accepts outside paks. It was rejecting *this* mod, whose `meta.lsx` was still
+in the pre-Patch-7 format, and a module whose meta will not parse is not refused with a message:
+it is simply absent from `AvailableMods`, from the in-game manager, and from the log. The entry
+in `modsettings.lsx` then disappeared for the plainest of reasons — the game deletes an entry
+whose module it cannot find.
+
+Two questions were being asked as one, and they have different answers:
+
+- **does the game know the module** — `meta.lsx` decides it, `AvailableMods` reports it;
+- **does the game load it** — `modsettings.lsx` decides it. A pak in `Mods\` is installed and
+  switched *off* until something enables it.
+
+`tools/register-mod.ps1` answers the second for any mod, not just this one: `-List` shows what
+is installed against what is enabled, `-Pak <name>` switches one on, `-Remove` off. Given a mod
+in the old format it refuses to write the entry and says so, instead of writing one that will
+vanish. `tools/build-mod.ps1` checks the same things before packing, so this repo cannot ship a
+module the game would ignore in silence.
+
+**Grafting** is still there and still works, as the fallback for a machine where the pak route
+fails: `graft-mod.ps1` puts the layer's `ScriptExtender` folder inside a module the game already
+loads (`GustavX`), where the Script Extender finds it without any mod at all. It adds only new
+paths, replaces nothing, and `-Uninstall` takes them away again. The two routes are **mutually
+exclusive** — both declare `"ModTable": "BG3Access"` — so `-InstallPak` removes one as it
+installs the other.
 
 Every script takes `-GameDir`, and defaults it to whatever `tools/find-game.ps1` finds —
 Steam's `libraryfolders.vdf`, then GOG's registry entry, then the usual paths, each
 candidate proved by `bin\bg3.exe` rather than by the folder name. `tools/install.ps1` is
-the same graft with the checks a stranger's machine needs around it (is the game there, is
-the Script Extender there, does anything answer when we try to speak) and is what
-`install.bat` runs.
+**still the graft** with the checks a stranger's machine needs around it (is the game there, is
+the Script Extender there, does anything answer when we try to speak), and is what `install.bat`
+runs. Moving the shipped installer onto the pak route is the next piece of work and has not been
+done.
 
 Two of those checks now fix what they find, because for the players this is for a diagnosis is
 not a fix:
@@ -169,9 +195,9 @@ here controls.
   running in the background. The autostart variant edits the registry; this machine does not
   use it.
 
-**This is a door to native plugins only.** Ordinary `.pak` mods are a different problem, and
-Patch 8 still refuses the ones that come from outside — which is why this layer is grafted into
-a module the game already loads rather than shipped as a pak.
+**This is a door to native plugins only.** Ordinary `.pak` mods are a different problem, and a
+solved one — see Install: Patch 8 does take them, this layer ships as one, and
+`tools/register-mod.ps1` enables any other.
 
 ## Dependencies not in this repo
 
