@@ -134,6 +134,31 @@ does not proxy anything — it injects from outside — so it and the extender c
 this machine, 2026-08-06: game up, loader in the process (`Running Loader by Cherry v0.1.0`),
 `boot.json` reporting `state=running` with all six of our modules loaded. No conflict.
 
+**Coexisting is not the same as harmless, and 2026-08-07 is the day that showed it.** Two
+crashes in two days — one in combat, one on the options screen — with nothing in the extender's
+logs, no Windows fault event and no dump, because runtime logging and crash reports were both
+off. What there was:
+
+```
+ERROR Отказано в доступе. (0x80070005)              ×9
+ERROR panicked at crates\yabg3nml\src\tray.rs:72:22
+ INFO Loading plugin bg3nativecameratweaks.dll
+```
+
+- The watcher **panics creating its tray icon** when the logon task starts it, which is the
+  crash dialog that appears at boot pointing into `AppData\...\Plugins\logs`. Access denied on
+  `Shell_NotifyIcon` is what starting before the shell looks like; a delay on the trigger would
+  probably settle it.
+- The plugin it injects is Native Camera Tweaks, and both crashes were at a moment the camera
+  changes mode. That is a suspicion, not a finding — but it is the newest variable, and this
+  layer needs none of it.
+
+So the isolation run is: task disabled, watcher killed, `enabled = false` in
+`%LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Plugins\config.toml`. Putting it back is
+`Enable-ScheduledTask -TaskName "BG3Access Native Loader"` and the `.bak-enabled` beside that
+config. Anything diagnosed with the loader in the process is diagnosed with a variable nobody
+here controls.
+
 - Tools (`bg3_injector.exe`, `bg3_watcher.exe`, `loader.dll`) → `<game>\bin\NativeModLoader\`.
   From that folder the game root is found on its own, but `install_root` in the config is
   written as the default Steam path and needs correcting on a machine like this one where the

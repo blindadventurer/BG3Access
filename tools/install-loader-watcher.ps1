@@ -1,6 +1,20 @@
 # Keep the native-plugin loader running, so plugins load without the player catching a ten-second
 # window by hand.
 #
+# Read this before running it again. Measured 2026-08-07, one day after it was installed:
+#
+#   ERROR panicked at crates\yabg3nml\src\tray.rs:72:22   preceded by nine 0x80070005
+#
+# The watcher panics building its tray icon when the logon trigger starts it - access denied on
+# Shell_NotifyIcon, which is what starting before the shell is ready looks like - and the panic
+# raises a crash dialog at every boot, pointing at a log inside AppData that means nothing to the
+# person reading it out. The injection itself still happened, so this is a dialog rather than a
+# failure; it is also the opposite of "nobody's job", which is the whole argument for the task.
+#
+# A delay on the logon trigger is the likely fix and has not been tried. Until it is, the task is
+# installed disabled-by-default territory: nothing in this layer needs a native plugin, and the
+# game crashed twice in two days with one injected. See the native-plugin section of README.md.
+#
 # Native BG3 plugins are DLLs injected into the running game. YABG3NML ships two ways to do it:
 #
 #   bg3_injector.exe   one shot, run *after* the game starts - and its own instructions say
