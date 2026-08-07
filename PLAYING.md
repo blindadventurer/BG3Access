@@ -328,6 +328,20 @@ category instead.
 
   **Statuses** come from the character rather than from the panel — the interface keeps them in
   a collection that cannot be opened, and the game's own entity hands them over plainly.
+- **What the buttons do, and where you are.** Two questions this panel makes hard for somebody
+  who cannot see it, and both are now answered out loud.
+
+  Every row says what **A** would do to it — "Кожаный доспех, нагрудник, A — надеть",
+  "Зелье лечения, ×2, зелье, A — выпить", "шлем, пусто, A — выбрать". That is not a guess: the
+  panel keeps a row of hints along the bottom, one per action, and shows only the ones that
+  apply to whatever the cursor is on. The layer reads the caption the game itself put there.
+  **Page Up / Page Down** and **Delete** list all of them, so "what can I even press here" has
+  an answer at any moment.
+
+  And it says **which side of the panel you are on** the moment you cross — "Снаряжение" when
+  the cursor moves onto the body, "Сумка: Гейл" when it moves into somebody's bag. Nothing in
+  the rows themselves distinguishes the two: a breastplate reads the same worn or carried, and
+  the game marks the boundary with a gap on screen and nothing else.
 - Panels the controller interface opens: the character sheet, the inventory, the radial menus,
   the confirmation boxes.
 

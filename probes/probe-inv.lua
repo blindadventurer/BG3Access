@@ -329,6 +329,146 @@ function W.types(budget)
     return out
 end
 
+--- The buttons this screen actually answers to, and what each one does.
+---
+--- The player's question was «я не понимаю как надевать предметы» - and the game does say,
+--- in a row of icons along the bottom that a screen reader has never had a word of. Each hint
+--- is a control carrying `BoundEvent` - the input event, `UIAccept`, `UIMessageBoxY`,
+--- `UIFilter` - and a `Tag` or `Content` holding its caption. The pair is the answer.
+---
+--- Walked across every visible widget, not just this one: the shared hint bar lives in
+--- `Overlay`, which is where X for the context menu was read off before.
+function W.hints(budget)
+    local ws = soft(Pad.findWidgets) or {}
+    local out, seen = {}, {}
+    for wi = 1, #ws do
+        local w = ws[wi]
+        if w.visible ~= false then
+            local left = { n = budget or 40000 }
+            local function rec(o, d)
+                if o == nil or d > 26 or left.n <= 0 then return end
+                left.n = left.n - 1
+                local p = props(o)
+                if p.IsVisible == false then return end
+                local ev = str(p.BoundEvent)
+                if ev ~= "nil" and ev ~= "" then
+                    local cap = Pad.loca(str(p.Tag))
+                    if type(cap) ~= "string" or cap == "nil" or cap == "" or cap:find("^h%x") then
+                        cap = (soft(A.collectText, o, 30, 6) or {})[1]
+                    end
+                    local key = ev .. "|" .. tostring(cap)
+                    if not seen[key] then
+                        seen[key] = true
+                        out[#out + 1] = { screen = str(w.name), event = ev,
+                                          caption = cap, enabled = p.IsEnabled }
+                        P(str(w.name) .. "  " .. ev .. " -> " .. tostring(cap) ..
+                          (p.IsEnabled == false and " (disabled)" or ""))
+                    end
+                end
+                local ch, cn = A.kids(o)
+                for i = 1, cn do rec(ch[i], d + 1) end
+            end
+            rec(w.node, 0)
+        end
+    end
+    P("hints: " .. #out)
+    A.write("inv_hints", out)
+    return out
+end
+
+--- The hint bar, which is the game answering "what can I do with this".
+---
+--- `ls:AlignableWrapPanel x:Name="Hints"` holds one button per action the panel offers, all
+--- of them `Visibility="Collapsed"` and shown by triggers - so **whichever are visible are
+--- exactly the actions available for the thing under the cursor**, and their captions change
+--- with it: `ItemActionButton`'s Tag is bound through `GetUseActionConverter`, which is the
+--- verb for this item («Надеть», «Выпить»).
+---
+--- Dumped child by child rather than searched for by `BoundEvent`, because the first attempt
+--- looked for that property and found four nodes in the whole game with a caption of nil.
+function W.hintbar(want)
+    local node = screenNode()
+    if node == nil then P("no visible " .. SCREEN) return nil end
+    local bar = soft(Pad.namedNode, node, tostring(want or "Hints"), 14)
+    if bar == nil then P("no node named " .. tostring(want or "Hints")) return nil end
+
+    local out = {}
+    local function rec(o, d)
+        if o == nil or d > 8 then return end
+        local p = props(o)
+        local cls = select(1, A.splitToString(A.realType(o)))
+        local ev = str(p.BoundEvent)
+        local nm = str(p.Name)
+        if ev ~= "nil" or nm ~= "nil" then
+            out[#out + 1] = {
+                depth = d, cls = cls, name = nm, event = ev,
+                tag = Pad.loca(str(p.Tag)),
+                visible = (p.IsVisible ~= false),
+                enabled = p.IsEnabled,
+                text = table.concat(soft(A.collectText, o, 40, 6) or {}, " | "),
+            }
+            local e = out[#out]
+            P(string.rep(" ", d) .. cls .. " " .. nm .. "  ev=" .. ev ..
+              (e.visible and "" or " hidden") .. "  tag=" .. tostring(e.tag) ..
+              "  text=«" .. e.text .. "»")
+        end
+        local ch, cn = A.kids(o)
+        for i = 1, cn do rec(ch[i], d + 1) end
+    end
+    rec(bar, 0)
+    A.write("inv_hintbar", out)
+    return out
+end
+
+--- Which physical button each interface event is bound to.
+---
+--- The hint bar names its actions by event - `UIAccept`, `UIMessageBoxY`, `ContextMenu` - and
+--- the game turns those into glyphs through `FindInputEventConverter` over
+--- `CurrentPlayer.UIData.InputEvents`. If that table can be read, the layer can say «A» and
+--- «Y» from the player's own bindings instead of from a table of guesses that a remap breaks.
+function W.inputevents()
+    local node = screenNode()
+    if node == nil then P("no visible " .. SCREEN) return nil end
+    local vm = soft(Pad.dataOf, node)
+    if type(vm) ~= "table" or type(vm.CurrentPlayer) ~= "userdata" then return nil end
+    local cp = soft(function() return vm.CurrentPlayer:GetAllProperties() end)
+    if type(cp) ~= "table" or type(cp.UIData) ~= "userdata" then return nil end
+    local ui = soft(function() return cp.UIData:GetAllProperties() end)
+    if type(ui) ~= "table" then return nil end
+
+    local out = { _type = type(ui.InputEvents) }
+    local ev = ui.InputEvents
+    if type(ev) == "userdata" then
+        local p = soft(function() return ev:GetAllProperties() end)
+        if type(p) == "table" then
+            for k, v in pairs(p) do out["prop." .. tostring(k)] = str(v) end
+        end
+        -- A Noesis collection answers to pairs even where GetAllProperties does not.
+        local ok = pcall(function()
+            local n = 0
+            for k, v in pairs(ev) do
+                n = n + 1
+                if n > 60 then break end
+                local vp = (type(v) == "userdata")
+                    and soft(function() return v:GetAllProperties() end) or nil
+                if type(vp) == "table" then
+                    local bits = {}
+                    for k2, v2 in pairs(vp) do bits[#bits + 1] = tostring(k2) .. "=" .. str(v2) end
+                    table.sort(bits)
+                    out["item." .. tostring(k)] = table.concat(bits, " ")
+                else
+                    out["item." .. tostring(k)] = str(v)
+                end
+            end
+            out._count = n
+        end)
+        out._iterable = ok
+    end
+    for k, v in pairs(out) do P("  " .. k .. " = " .. tostring(v):sub(1, 160)) end
+    A.write("inv_inputevents", out)
+    return out
+end
+
 --- Where a string on screen actually lives.
 ---
 --- The equipment slots label themselves - «Ближний бой», «Источник света», «Лагерь» all turn

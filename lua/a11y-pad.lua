@@ -3550,6 +3550,30 @@ M.recordLine = recordLine
 --- Returned as two values: the line to say, and a key that changes whenever the cursor moves.
 --- They differ on purpose - two empty slots read alike and are not the same slot, so the key
 --- carries the position even when the wording does not need to.
+--- Which part of the screen the cursor is in, said when it crosses from one to the other.
+---
+--- The player's words: «где граница между сумкой и самим персонажем». There is nothing in the
+--- rows to tell the two apart - a breastplate in a bag and a breastplate on the body read the
+--- same - and the panel marks the boundary with a gap on screen and nothing else.
+---
+--- Told from the record rather than from the tree, which needs no knowledge of whatever the
+--- equipment area happens to be called: a slot carries `SlotType`, an inventory cell carries
+--- `Object`, and a bag belongs to whoever the `Expander` above it names.
+local function sectionOf(rec, chain)
+    if type(rec) ~= "table" then return nil end
+    if rec.SlotType ~= nil then return "Снаряжение" end
+    if rec.Object == nil then return nil end
+    for i = #chain, 1, -1 do
+        local cls = select(1, A.splitToString(A.realType(chain[i])))
+        if cls:find("Expander", 1, true) then
+            local who = titleUnder(chain[i])
+            if who ~= nil then return "Сумка: " .. who end
+            break
+        end
+    end
+    return "Сумка"
+end
+
 function M.levelUpFocus(widgetNode, focused)
     local rec, pos, total, list = rowAt(widgetNode, focused)
     if rec == nil then
@@ -3557,8 +3581,9 @@ function M.levelUpFocus(widgetNode, focused)
         if rec == nil then return nil end
         local line = recordLine(rec)
         if line == nil then return nil end
-        return line, line
+        return line, line, sectionOf(rec, M.focusPath or {})
     end
+    local section = sectionOf(rec, M.focusPath or {})
     local line = recordLine(rec)
     if line == nil then return nil end
     -- The chosen row and the row of what is on offer read alike and mean opposite things:
@@ -3570,7 +3595,7 @@ function M.levelUpFocus(widgetNode, focused)
     if pos ~= nil and total ~= nil and total > 1 then
         line = line .. ", " .. pos .. " из " .. total
     end
-    return line, tostring(list) .. "|" .. tostring(pos) .. "|" .. line
+    return line, tostring(list) .. "|" .. tostring(pos) .. "|" .. line, section
 end
 
 --- The step of levelling up the player is on, and how much of it is left to do.
@@ -4177,6 +4202,74 @@ function M.characterLine(rec)
     return table.concat(parts, ", ")
 end
 
+-- What the buttons do here, which is the game answering "how do I put this on".
+--
+-- `ls:AlignableWrapPanel x:Name="Hints"` holds one control per action the screen offers, every
+-- one of them `Visibility="Collapsed"` in the markup and shown by a trigger - so **whichever
+-- are visible are exactly the actions available for the thing under the cursor**, and their
+-- captions change with it. `ItemActionButton`'s caption is bound through
+-- `GetUseActionConverter`, which is the verb for this particular item: «Надеть», «Выпить»,
+-- «Использовать». On an equipment slot `ToggleEquipmentSelectorButton` takes its place with
+-- «Выбрать»; on a party member's header it is «Вкл/выкл».
+--
+-- The player's question was exactly this - «я не понимаю как надевать предметы» - and the
+-- answer was on screen the whole time, as a row of icons with a word beside each.
+--
+-- The buttons are named from a fixed table and not from the player's bindings. `InputEvents`
+-- on the model does map an event to a physical button - `UIToggleCharacterOverview` to
+-- `ButtonY`, `UICallAllies` to `ButtonX` - but the interface's own four (`UIAccept`,
+-- `UICancel`, `UICreate`, `UIMessageBoxY`) are not in that table at all, and BG3 does not let
+-- the face buttons be remapped in menus. Anything not in the table is said as its caption
+-- alone rather than with a button that might be wrong.
+local HINT_BUTTON = {
+    UIAccept = "A", UICancel = "B", UICreate = "X", ContextMenu = "X", UIMessageBoxY = "Y",
+}
+
+--- The visible hints, as "button — what it does".
+---
+--- Not on every pass: the bar is a few hundred nodes and the answer only changes when the
+--- cursor does, so callers run it on a focus change or on a keypress.
+function M.hintLines(node)
+    -- Shallow on purpose. `Hints` sits directly under the widget's template root, a few
+    -- levels down; searching fourteen deep for it walks the whole inventory on the way and
+    -- cost 24 ms, which tripped the reader's own back-off to a quarter of its rate.
+    local bar = M.namedNode(node, "Hints", 6)
+    if bar == nil then return nil end
+    local out, seen = {}, {}
+    local function rec(o, d)
+        if o == nil or d > 8 or #out >= 8 then return end
+        local p = props(o)
+        if p.IsVisible == false then return end
+        local ev = str(p.BoundEvent)
+        if ev ~= "nil" and ev ~= "" then
+            local cap = (A.collectText(o, 40, 6) or {})[1]
+            if type(cap) == "string" and cap ~= "" and not seen[cap] then
+                seen[cap] = true
+                local btn = HINT_BUTTON[ev]
+                out[#out + 1] = { event = ev, caption = cap,
+                                  said = btn and (btn .. " — " .. cap) or cap }
+            end
+            return
+        end
+        local ch, cn = A.kids(o)
+        for i = 1, cn do rec(ch[i], d + 1) end
+    end
+    rec(bar, 0)
+    if #out == 0 then return nil end
+    return out
+end
+
+--- The verb bound to the accept button right now, which is what the thing under the cursor
+--- will do if the player presses A.
+function M.acceptHint(node)
+    local hints = M.hintLines(node)
+    if hints == nil then return nil end
+    for i = 1, #hints do
+        if hints[i].event == "UIAccept" then return hints[i].caption end
+    end
+    return nil
+end
+
 --- The thing under the cursor at length: what it is for, what it weighs, what it is worth.
 ---
 --- The spoken line is one utterance and has to stay one - a player walking forty slots wants
@@ -4216,6 +4309,11 @@ function M.recordDetails(node)
     if #out == 0 and rec.CharacterType ~= nil then
         local who = M.characterSummary(node)
         if who ~= nil then return who end
+    end
+    -- And what can be done with it, which on this screen is half the question.
+    local hints = M.hintLines(node)
+    if hints ~= nil then
+        for i = 1, #hints do out[#out + 1] = hints[i].said end
     end
     if #out == 0 then return nil end
     return out
@@ -4262,6 +4360,13 @@ function M.panelLines(node)
         if sel ~= nil and #items > 1 then
             add(items[sel].text .. ", " .. sel .. " из " .. #items)
         end
+    end
+
+    -- What the buttons do, first: on a screen nobody can see, "what can I even press here"
+    -- comes before anything the screen contains.
+    local hints = M.hintLines(node)
+    if hints ~= nil then
+        for i = 1, #hints do add(hints[i].said) end
     end
 
     local sc = selectedCharacter(node)
@@ -6093,7 +6198,7 @@ local function readerTick()
         M.lastScreen = widget.name
         M.lastFocus = nil
         M.saidCaption = nil
-        M.tab, M.lastProse = nil, nil
+        M.tab, M.lastProse, M.lastSection = nil, nil, nil
         -- One expensive pass per screen, for the review cursor and the title.
         local info = visibleScan(widget.node, M.nodeCap, 80)
         M.lines, M.cursor, M.linesFrom =
@@ -6272,12 +6377,19 @@ local function readerTick()
     -- the template is bound to. Ahead of focusText, which would otherwise announce the
     -- control's own x:Name ("spellButton", "CellRoot").
     if text == nil and M.RECORD_SCREENS[str(widget.name)] then
-        local line, key = M.levelUpFocus(widget.node, focused)
+        local line, key, section = M.levelUpFocus(widget.node, focused)
         if line ~= nil then
             text = line
             -- Two empty slots read the same and are not the same slot, so the key carries
             -- the position where the wording does not.
             dedup = key
+            -- Crossing from a bag onto the body, or from one party member's bag to another,
+            -- is invisible in the rows: a breastplate reads the same in either place. Said
+            -- once on the crossing, ahead of the row it landed on.
+            if section ~= nil and section ~= M.lastSection then
+                M.lastSection = section
+                pend(section)
+            end
         end
     end
     if text == nil then text = focusText(focused) end
@@ -6297,6 +6409,16 @@ local function readerTick()
                                                 chain = ancestry(focused) }
         end
         if text ~= nil then
+            -- What pressing A here would do, taken from the screen's own hint bar. The
+            -- caption is bound to the thing under the cursor - «Надеть» on a breastplate,
+            -- «Выпить» on a potion, «Выбрать» on an empty slot - so it is the answer to "how
+            -- do I put this on" said in the same breath as what the thing is.
+            --
+            -- Only on a focus change, never per pass: the bar is a few hundred nodes.
+            if M.CHARACTER_PANELS ~= nil and M.CHARACTER_PANELS[str(widget.name)] then
+                local verb = soft(function() return M.acceptHint(widget.node) end)
+                if verb ~= nil then text = text .. ", A — " .. verb end
+            end
             _P("[pad] focus -> " .. tostring(text) .. " [" .. tostring(widget.name) .. "]")
             pend(text)
             -- The description that belongs to the choice, said with it and only when it is
