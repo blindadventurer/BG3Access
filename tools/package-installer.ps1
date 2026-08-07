@@ -64,9 +64,21 @@ $sed      = Join-Path $stage "BG3Access.sed"
 # written here renders as mojibake on any Windows whose codepage is not 1251 - which includes
 # the machine of the first person abroad who tries this.
 $prompt = "Install BG3Access, screen reader support for Baldur's Gate 3? " +
-          "It installs as an ordinary mod and, if the Script Extender is missing, downloads it " +
-          "from the extender's own project and puts it in the game folder. Close the game first. " +
+          "Close the game first. It installs as an ordinary mod and, if the Script Extender is " +
+          "missing, downloads it from that project. " +
           "Nothing is replaced and uninstall.bat undoes it."
+
+# RUN THIS SCRIPT DIRECTLY. It does not work from a scheduled task.
+#
+# Measured 2026-08-08: through tools\run-on-machine.ps1 - which runs a command as a one-shot
+# task to escape an agent shell's redirected profile - iexpress reads the .SED, writes its .DDF
+# beside it, produces no exe, prints nothing and exits 0. The same command in an ordinary
+# console builds it first time. Whatever iexpress wants from its session, a task does not give
+# it, and it does not say so.
+#
+# Worth writing down because the silence is identical to every other way this fails: a missing
+# source file, a path with a space in it, a .SED with a BOM. An hour went into shortening the
+# install prompt on a theory about string limits before the environment was suspected at all.
 
 # Three things about the command below, each of which cost a build to find out, and all three
 # fail the same way: the package extracts itself, runs nothing, deletes its temp folder and
