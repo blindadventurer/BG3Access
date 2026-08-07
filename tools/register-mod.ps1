@@ -24,9 +24,17 @@
 # Usage: powershell -File register-mod.ps1 -List
 #        powershell -File register-mod.ps1 -Pak BG3AccessDiag.pak
 #        powershell -File register-mod.ps1 -Pak BG3AccessDiag.pak -Remove
+#        powershell -File register-mod.ps1 -Meta path\to\meta.lsx      (no Divine needed)
+#
+# -Meta exists for the installer a player runs. Reading the identity out of a pak needs Divine,
+# which is 30 MB of LSLib and PhysX and has no business in a release; but the release already
+# carries the mod's own meta.lsx, and that is the same source of truth the pak was built from.
+# So the identity always comes from a meta - never from constants copied into a second file that
+# can drift from it.
 
 param(
     [string]$Pak,
+    [string]$Meta,
     [switch]$Remove,
     [switch]$List,
     [string]$Divine
@@ -65,44 +73,57 @@ if ($List) {
     return
 }
 
-if (-not $Pak) { Write-Error "pass -Pak <name.pak> or -List" }
+if (-not $Pak -and -not $Meta) { Write-Error "pass -Pak <name.pak>, -Meta <meta.lsx> or -List" }
 
-$pakPath = $Pak
-if (-not (Test-Path $pakPath)) { $pakPath = Join-Path $modsDir $Pak }
-if (-not (Test-Path $pakPath)) { Write-Error "no pak at $Pak or $pakPath" }
+# --- what the module says it is -----------------------------------------------------------------
 
-# --- what the pak says it is ------------------------------------------------------------------
+$metaXml  = $null
+$metaFrom = $null
 
-if (-not $Divine) { $Divine = Join-Path $PSScriptRoot "lslib\Tools\Divine.exe" }
-if (-not (Test-Path $Divine)) { Write-Error "divine.exe not found at $Divine" }
+if ($Meta) {
+    if (-not (Test-Path $Meta)) { Write-Error "no meta.lsx at $Meta" }
+    $metaXml  = [xml](Get-Content $Meta -Raw -Encoding UTF8)
+    $metaFrom = $Meta
+} else {
+    $pakPath = $Pak
+    if (-not (Test-Path $pakPath)) { $pakPath = Join-Path $modsDir $Pak }
+    if (-not (Test-Path $pakPath)) { Write-Error "no pak at $Pak or $pakPath" }
 
-# Divine is checked by what it produced, never by $LASTEXITCODE: `list-package` prints a
-# perfectly good listing and still exits non-zero, and `2>&1` on a native command in PS 5.1
-# wraps its stderr in ErrorRecords that trip $ErrorActionPreference = "Stop". Together those
-# two killed this script before its first line of output, which from outside looked exactly
-# like the task having run and done nothing.
-$listing = & $Divine -g bg3 -a list-package -s $pakPath
+    if (-not $Divine) { $Divine = Join-Path $PSScriptRoot "lslib\Tools\Divine.exe" }
+    if (-not (Test-Path $Divine)) {
+        Write-Error ("divine.exe not found at $Divine - reading a pak needs it. If you are " +
+                     "installing this layer, pass -Meta <the shipped meta.lsx> instead.")
+    }
 
-# The listing is "<path>\t<size>\t<flags>" per line; the meta is the only file named meta.lsx
-# directly under Mods/<Folder>/.
-$metaPath = $null
-foreach ($line in $listing) {
-    $p = ([string]$line -split "`t")[0]
-    if ($p -match "^Mods/[^/]+/meta\.lsx$") { $metaPath = $p; break }
+    # Divine is checked by what it produced, never by $LASTEXITCODE: `list-package` prints a
+    # perfectly good listing and still exits non-zero, and `2>&1` on a native command in PS 5.1
+    # wraps its stderr in ErrorRecords that trip $ErrorActionPreference = "Stop". Together those
+    # two killed this script before its first line of output, which from outside looked exactly
+    # like the task having run and done nothing.
+    $listing = & $Divine -g bg3 -a list-package -s $pakPath
+
+    # The listing is "<path>\t<size>\t<flags>" per line; the meta is the only file named meta.lsx
+    # directly under Mods/<Folder>/.
+    $metaPath = $null
+    foreach ($line in $listing) {
+        $p = ([string]$line -split "`t")[0]
+        if ($p -match "^Mods/[^/]+/meta\.lsx$") { $metaPath = $p; break }
+    }
+    if (-not $metaPath) {
+        Write-Error "$pakPath has no Mods/<Folder>/meta.lsx - it is not a mod package"
+    }
+
+    $tmp = Join-Path $env:TEMP ("bg3-meta-" + [guid]::NewGuid().ToString("N") + ".lsx")
+    & $Divine -g bg3 -a extract-single-file -s $pakPath -f $metaPath -d $tmp | Out-Null
+    if (-not (Test-Path $tmp)) { Write-Error "could not extract $metaPath from $pakPath" }
+
+    $metaXml  = [xml](Get-Content $tmp -Raw -Encoding UTF8)
+    $metaFrom = $pakPath
+    Remove-Item $tmp -Force -ErrorAction SilentlyContinue
 }
-if (-not $metaPath) {
-    Write-Error "$pakPath has no Mods/<Folder>/meta.lsx - it is not a mod package"
-}
 
-$tmp = Join-Path $env:TEMP ("bg3-meta-" + [guid]::NewGuid().ToString("N") + ".lsx")
-& $Divine -g bg3 -a extract-single-file -s $pakPath -f $metaPath -d $tmp | Out-Null
-if (-not (Test-Path $tmp)) { Write-Error "could not extract $metaPath from $pakPath" }
-
-[xml]$meta = Get-Content $tmp -Raw -Encoding UTF8
-Remove-Item $tmp -Force -ErrorAction SilentlyContinue
-
-$info = $meta.SelectSingleNode("//node[@id='ModuleInfo']")
-if (-not $info) { Write-Error "$metaPath has no ModuleInfo node" }
+$info = $metaXml.SelectSingleNode("//node[@id='ModuleInfo']")
+if (-not $info) { Write-Error "$metaFrom has no ModuleInfo node" }
 function MetaAttr($id) {
     $a = $info.SelectSingleNode("attribute[@id='$id']")
     if ($a) { return $a.value }
@@ -123,7 +144,7 @@ $version = MetaAttr "Version64"
 $md5     = MetaAttr "MD5"
 $handle  = MetaAttr "PublishHandle"
 
-if (-not $folder -or -not $uuid) { Write-Error "$metaPath names no Folder/UUID" }
+if (-not $folder -or -not $uuid) { Write-Error "$metaFrom names no Folder/UUID" }
 
 # The gate. Enabling a module the game cannot parse writes an entry that is deleted at the next
 # startup, and the deletion looks exactly like the game refusing the mod - so say the real thing

@@ -47,6 +47,13 @@ $FILES = @(
     "tools\install.ps1",
     "tools\install-extender.ps1",
     "tools\uninstall.ps1",
+    # register-mod switches the mod on in modsettings.lsx, which is half of installing it -
+    # a pak nobody enabled is a mod the game ignores without a word. It reads the identity out
+    # of the meta.lsx shipped above (-Meta), so the release needs no Divine.
+    "tools\register-mod.ps1",
+    # graft-mod is still here, and not because anything installs that way now: an upgrade from
+    # a release older than the mod install arrives with a graft in the game folder, and both
+    # install.ps1 and uninstall.ps1 need this to take it away.
     "tools\graft-mod.ps1",
     "tools\install-speech-service.ps1",
     "tools\speak.ps1",
@@ -57,6 +64,19 @@ $FILES = @(
 
 if (Test-Path $stageRoot) { Remove-Item $stageRoot -Recurse -Force }
 New-Item -ItemType Directory -Force $stage | Out-Null
+
+# The pak is built here rather than picked up, because the one way to ship a broken release is
+# to ship a stale one: dist\BG3Access.pak is a build output, it is not in version control, and
+# nothing else would notice it being a week behind the Lua beside it.
+#
+# -NoGraft matters. Without it build-mod grafts as it goes, and a machine that has both the pak
+# and the graft installed hands the extender the same ModTable twice - packaging a release must
+# not quietly break the packager's own game.
+Write-Host "building the mod..."
+& (Join-Path $PSScriptRoot "build-mod.ps1") -Pak -NoGraft | Out-Null
+$pakSrc = Join-Path $root "dist\BG3Access.pak"
+if (-not (Test-Path $pakSrc)) { Write-Error "build-mod.ps1 -Pak produced no $pakSrc" }
+Copy-Item $pakSrc (Join-Path $stage "BG3Access.pak") -Force
 
 foreach ($pattern in $FILES) {
     $src = Join-Path $root $pattern

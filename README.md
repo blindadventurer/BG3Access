@@ -70,13 +70,22 @@ whatever the player is looking at, in all fifteen of the game's languages.
 
 ## Install
 
-The layer installs as an ordinary mod: `BG3Access.pak` in `%LOCALAPPDATA%\...\Mods\`, enabled
-in `modsettings.lsx`.
+Unpack the release and run `install.bat`. **Close the game first** — Baldur's Gate 3 holds every
+pak in `Mods\` open while it runs, switched on or not, so an install cannot replace one until it
+quits.
+
+The layer installs as an ordinary mod: `BG3Access.pak` in `%LOCALAPPDATA%\...\Mods\`, enabled in
+`modsettings.lsx`. Nothing of it goes into the game folder, so **no elevation is needed** unless
+the Script Extender is missing and has to be put in `<game>\bin\` — which is the one step that
+still asks for it, and it says so on its own line. Upgrading from a release older than this one
+takes the old graft away first; the two cannot run at once.
+
+From a working copy of this repository, the same thing without the installer:
 
 ```powershell
-powershell -File tools\build-mod.ps1 -Pak -InstallPak    # build and install as a mod
-powershell -File tools\register-mod.ps1 -Pak BG3Access.pak   # switch it on
-powershell -File tools\mod-status.ps1                    # after restarting: did it take?
+powershell -File tools\build-mod.ps1 -Pak -InstallPak         # build and install as a mod
+powershell -File tools\register-mod.ps1 -Pak BG3Access.pak    # switch it on
+powershell -File tools\mod-status.ps1                         # after restarting: did it take?
 ```
 
 This README said the opposite until 2026-08-07 — "Patch 8 does not accept a mod from outside
@@ -109,11 +118,10 @@ installs the other.
 
 Every script takes `-GameDir`, and defaults it to whatever `tools/find-game.ps1` finds —
 Steam's `libraryfolders.vdf`, then GOG's registry entry, then the usual paths, each
-candidate proved by `bin\bg3.exe` rather than by the folder name. `tools/install.ps1` is
-**still the graft** with the checks a stranger's machine needs around it (is the game there, is
-the Script Extender there, does anything answer when we try to speak), and is what `install.bat`
-runs. Moving the shipped installer onto the pak route is the next piece of work and has not been
-done.
+candidate proved by `bin\bg3.exe` rather than by the folder name. `tools/install.ps1` is that
+install with the checks a stranger's machine needs around it — is the game there, is the Script
+Extender there, is an old graft still in the way, does anything answer when we try to speak —
+and is what `install.bat` runs.
 
 Two of those checks now fix what they find, because for the players this is for a diagnosis is
 not a fix:

@@ -39,10 +39,48 @@ Write-Host "BG3Access - removing the accessibility layer"
 Write-Host "".PadRight(60, "-")
 
 Step "The layer"
-if ([string]::IsNullOrWhiteSpace($GameDir) -or -not (Test-Path $GameDir)) {
-    Write-Host "   ! game not found - pass -GameDir to remove the grafted files"
+
+# Three things now, where there used to be one: the entry in modsettings.lsx, the pak it points
+# at, and - for anyone upgrading from a release that predates the mod install - a graft still
+# sitting inside the game folder. Any of the three can be absent, and absent is an answer.
+$root    = Split-Path $PSScriptRoot
+$appData = Join-Path $env:LOCALAPPDATA "Larian Studios\Baldur's Gate 3"
+$pakFile = Join-Path $appData "Mods\BG3Access.pak"
+
+# Switched off before the pak goes, and not after: an entry naming a module that is no longer
+# there is exactly the state the game silently repairs by deleting the entry, and a tidy-up that
+# relies on the game to finish it is not a tidy-up.
+$meta = Join-Path $root "BG3Access\Mods\BG3Access\meta.lsx"
+if (Test-Path $meta) {
+    try {
+        & (Join-Path $PSScriptRoot "register-mod.ps1") -Meta $meta -Remove *> $null
+        Ok "switched off in modsettings.lsx"
+    } catch {
+        Ok "could not edit modsettings.lsx: $_"
+    }
 } else {
-    & (Join-Path $PSScriptRoot "graft-mod.ps1") -GameDir $GameDir -HostModule $HostModule -Uninstall
+    Ok "no meta.lsx here - remove the BG3Access entry from modsettings.lsx by hand"
+}
+
+if (Test-Path $pakFile) {
+    if (Get-Process bg3, bg3_dx11 -ErrorAction SilentlyContinue) {
+        Ok "the game is running and holds the pak open - close it and run this again"
+    } else {
+        Remove-Item $pakFile -Force
+        Ok "removed Mods\BG3Access.pak"
+    }
+} else {
+    Ok "no Mods\BG3Access.pak"
+}
+
+if ([string]::IsNullOrWhiteSpace($GameDir) -or -not (Test-Path $GameDir)) {
+    Write-Host "   ! game not found - pass -GameDir if an older version left files in it"
+} else {
+    # Silent when there is nothing there, which is the normal case for anyone who never ran a
+    # release older than the move to a real mod.
+    if (Test-Path (Join-Path $GameDir "Data\Mods\$HostModule\ScriptExtender")) {
+        & (Join-Path $PSScriptRoot "graft-mod.ps1") -GameDir $GameDir -HostModule $HostModule -Uninstall
+    }
 
     $seSettings = Join-Path $GameDir "bin\ScriptExtenderSettings.json"
     $backup = "$seSettings.bak-a11y"

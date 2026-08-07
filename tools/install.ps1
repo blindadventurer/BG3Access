@@ -78,31 +78,34 @@ Ok $GameDir
 
 # Can this account change the game folder at all?
 #
-# Every step below writes into it, and on Steam's default library - under Program Files - an
-# ordinary user cannot. That is where most people's copy is; the only copy this was developed
-# against sits on a second drive, which is why it took until now to look.
+# On Steam's default library - under Program Files - an ordinary user cannot, and that is where
+# most people's copy is. This used to end the install: everything written back then went into
+# the game folder, so no write access meant nothing could be done at all.
 #
-# Asked once, here, rather than discovered three steps down inside whichever write happens to
-# come first. Measured: with the Script Extender already present, step 2 skips its own writability
-# check and the first thing to fail is the settings file - an UnauthorizedAccessException with a
-# path in it, no remedy, and $ErrorActionPreference = Stop taking the whole install with it. The
-# remedy is one right-click, and guessing that from a .NET exception is not something to ask of
-# somebody who cannot see it.
-$modsDir = Join-Path $GameDir "Data\Mods"
+# That is no longer true. The layer installs as a mod, into %LOCALAPPDATA%, where a user always
+# has write access. What still needs the game folder is the Script Extender (bin\DWrite.dll and
+# its settings file) - so a player whose extender is already there, which is anyone who has ever
+# installed a mod, can now install this layer with no elevation at all.
+#
+# So the answer is recorded rather than acted on, and each step below says for itself whether it
+# needed it. Asked once, here, rather than discovered three steps down inside whichever write
+# happens to come first: the failure that produces is an UnauthorizedAccessException with a path
+# and no remedy, and guessing "right-click, Run as administrator" out of a .NET exception is not
+# something to ask of somebody who cannot see it.
+$gameWritable = $false
 try {
-    New-Item -ItemType Directory -Force $modsDir | Out-Null
-    $probe = Join-Path $modsDir ".bg3access-write-test"
+    $binDir = Join-Path $GameDir "bin"
+    $probe = Join-Path $binDir ".bg3access-write-test"
     [System.IO.File]::WriteAllText($probe, "")
     Remove-Item $probe -Force
+    $gameWritable = $true
 } catch {
-    Bad "this account cannot write into $GameDir"
-    Write-Host ""
-    Write-Host "   The game is in a folder Windows will not let you change - usually because"
-    Write-Host "   it is under Program Files. Right-click install.bat, choose"
-    Write-Host "   Run as administrator, and run it again. Nothing was changed."
-    Say ("Baldur's Gate 3 is in a folder this account cannot change. Right-click install dot bat " +
-         "and choose Run as administrator.")
-    exit 1
+    $gameWritable = $false
+}
+if ($gameWritable) {
+    Ok "this account can change the game folder"
+} else {
+    Ok "read-only for this account - the layer does not need that, the Script Extender does"
 }
 
 # --- 2. the Script Extender ------------------------------------------------------------------
@@ -117,6 +120,15 @@ Step "Script Extender"
 $dwrite = Join-Path $GameDir "bin\DWrite.dll"
 if (Test-Path $dwrite) {
     Ok ("bin\DWrite.dll, {0:yyyy-MM-dd}" -f (Get-Item $dwrite).LastWriteTime)
+} elseif (-not $gameWritable) {
+    # Named as its own case rather than left to the download to discover, because the remedy is
+    # different from every other problem on this page: not "install something", but "run this
+    # again the other way". The rest of the install still happens - the layer goes in either way,
+    # and coming back with one right-click is a much smaller ask than starting over.
+    Bad "the Script Extender is missing and this account cannot write into the game folder"
+    Write-Host "     The game is somewhere Windows will not let you change, usually under"
+    Write-Host "     Program Files. Right-click install.bat, choose Run as administrator,"
+    Write-Host "     and run it again - that step is the only one that needs it."
 } elseif ($NoExtender) {
     Bad "the Script Extender is not installed - no mod code runs without it"
     Write-Host "     Get it from https://github.com/Norbyte/bg3se/releases"
@@ -153,6 +165,11 @@ if (Test-Path $dwrite) {
 Step "Script Extender settings"
 $seSettings = Join-Path $GameDir "bin\ScriptExtenderSettings.json"
 
+if (-not $gameWritable) {
+    Ok "skipped - the game folder is read-only for this account"
+    $notes += "DeveloperMode could not be set; the layer runs without it"
+} else {
+
 # Set-Content -Encoding UTF8 writes a byte order mark on PS 5.1, and this file is read by a
 # C++ JSON parser that was never given a reason to expect one. The game writes it without a
 # BOM; so does this. (build-mod.ps1 learned the same lesson on modsettings.lsx.)
@@ -178,8 +195,8 @@ if (Test-Path $seSettings) {
         Bad "could not read $seSettings - leave it alone and check it by hand"
     }
 } else {
-    # Guarded even though the folder was proved writable above: bin\ can carry its own ACL, and
-    # an install that dies here would die with the layer already grafted and speech uninstalled.
+    # Guarded even though bin\ was proved writable above: it can carry its own ACL, and a
+    # failure here must not take the install with it - the layer itself is not in this folder.
     try {
         Write-Json $seSettings "{`r`n    `"DeveloperMode`": true,`r`n    `"CreateConsole`": false`r`n}`r`n"
         Ok "written: bin\ScriptExtenderSettings.json"
@@ -188,29 +205,99 @@ if (Test-Path $seSettings) {
     }
 }
 
+}   # end: the game folder is writable
+
 # --- 4. the layer itself -----------------------------------------------------------------------
 
 Step "The layer"
 
-# Nothing here is tied to where the game lives - the graft is Data\Mods\<host>\ScriptExtender
-# inside whatever folder was found, and everything the layer reads or writes at runtime it asks
-# the Script Extender for by relative name. What it *is* tied to is the host module existing in
-# the load order, and that is worth proving rather than assuming: GustavX is the Patch 8
-# campaign module, so its absence means a game this was never tested against, and a graft onto
-# a module the game does not load is silence with nothing anywhere to explain it.
-$hostPak = Join-Path $GameDir "Data\$HostModule.pak"
-if (-not (Test-Path $hostPak)) {
+# The layer is an ordinary mod: a pak in %LOCALAPPDATA%\...\Mods\ and an entry in
+# modsettings.lsx. Nothing of it goes into the game folder, which is why the read-only case
+# above is survivable at all.
+#
+# It used to be a graft - the layer's ScriptExtender folder dropped inside GustavX's - because
+# this project believed Patch 8 would not load a mod from outside its own manager. It does. What
+# it would not load was our meta.lsx, still in the pre-Patch-7 format; see build-mod.ps1.
+$appData = Join-Path $env:LOCALAPPDATA "Larian Studios\Baldur's Gate 3"
+$modsDir = Join-Path $appData "Mods"
+
+# Still worth proving rather than assuming: GustavX is the Patch 8 campaign module and the
+# layer's meta declares a dependency on that generation of the game. Its absence means a version
+# this was never tested against, and the failure that produces is silence with nothing anywhere
+# to explain it.
+if (-not (Test-Path (Join-Path $GameDir "Data\$HostModule.pak"))) {
     Bad "no Data\$HostModule.pak - this is not the game version the layer was built for"
 }
 
-try {
-    & (Join-Path $PSScriptRoot "graft-mod.ps1") -GameDir $GameDir -HostModule $HostModule -Quiet
-} catch {
-    # $_ carries graft-mod's own message, which for the one failure worth naming - a game folder
-    # this account cannot write to - already says to run as administrator.
-    Bad "the install failed: $_"
-    Say "The install failed. Nothing is running."
+# An upgrade from any release before this one arrives with a graft already in place, and the two
+# routes cannot coexist: both declare "ModTable": "BG3Access", so the extender would be handed
+# the same table twice. Taken away first, and never silently - somebody reading the log of a
+# failed upgrade needs to see that this happened.
+$graft = Join-Path $GameDir "Data\Mods\$HostModule\ScriptExtender"
+if (Test-Path $graft) {
+    if ($gameWritable) {
+        try {
+            # *> $null and not | Out-Null. Out-Null takes the success stream only, and every
+            # script in here reports through Write-Host, which since PS 5 goes to the
+            # information stream - so the called script's own narration lands in the middle of
+            # this one's. That is noise on a page that is read out loud, and worse than noise
+            # when it carries instructions meant for someone running that script directly.
+            # An error still throws past this and into the catch; nothing is being hidden.
+            & (Join-Path $PSScriptRoot "graft-mod.ps1") -GameDir $GameDir -HostModule $HostModule -Uninstall *> $null
+            Ok "removed the graft left by an earlier version"
+        } catch {
+            Bad "could not remove the old graft at $graft - delete that folder by hand"
+        }
+    } else {
+        Bad "an earlier version is grafted into the game folder and cannot be removed from here"
+        Write-Host "     Both would run at once and conflict. Right-click install.bat and choose"
+        Write-Host "     Run as administrator, or delete this folder yourself:"
+        Write-Host "     $graft"
+    }
+}
+
+# The pak travels beside this script in a release, and lands in dist\ on the machine it is
+# built on. Both are checked so that a run out of a working copy behaves like a run out of a
+# release, which is the only way the release path ever gets exercised before it ships.
+$pak = $null
+foreach ($cand in @((Join-Path $root "BG3Access.pak"), (Join-Path $root "dist\BG3Access.pak"))) {
+    if (-not $pak -and (Test-Path $cand)) { $pak = $cand }
+}
+if (-not $pak) {
+    Bad "BG3Access.pak is missing from this download - it cannot be installed without it"
+    Say "The install failed: a file is missing from the download."
     exit 1
+}
+
+try {
+    New-Item -ItemType Directory -Force $modsDir | Out-Null
+    Copy-Item $pak (Join-Path $modsDir "BG3Access.pak") -Force
+    Ok ("Mods\BG3Access.pak, {0:N0} KB" -f ((Get-Item $pak).Length / 1KB))
+} catch {
+    # The overwhelmingly likely cause, and the one the .NET message describes worst: a running
+    # game holds an open handle on every pak it loaded, so upgrading while playing fails with
+    # "the process cannot access the file". Named plainly, because "close the game and run this
+    # again" is a thing anybody can do and "IOException 0x80070020" is not.
+    if (Get-Process bg3, bg3_dx11 -ErrorAction SilentlyContinue) {
+        Bad "Baldur's Gate 3 is running - close it and run install.bat again"
+        Say "Baldur's Gate 3 is still running. Close it and install again."
+    } else {
+        Bad "the layer could not be installed: $_"
+        Say "The install failed. Nothing is running."
+    }
+    exit 1
+}
+
+# Installed and switched on are two different things, and a pak nobody enabled is a mod the game
+# ignores in silence. The identity is read out of the shipped meta.lsx rather than written here
+# as constants, so it cannot drift from the pak it describes.
+try {
+    $meta = Join-Path $root "BG3Access\Mods\BG3Access\meta.lsx"
+    & (Join-Path $PSScriptRoot "register-mod.ps1") -Meta $meta *> $null
+    Ok "switched on in modsettings.lsx"
+} catch {
+    Bad "the layer is installed but could not be switched on: $_"
+    Write-Host "     Run: powershell -File tools\register-mod.ps1 -Meta BG3Access\Mods\BG3Access\meta.lsx"
 }
 
 # --- 4b. the thing the layer reads through -------------------------------------------------
