@@ -71,6 +71,12 @@ if (Test-Path $boot) {
     Line "bootstrap" ($b.state -eq "running") ("state=$($b.state) modules=$($b.modules -join ' ') " +
         "controllerMode=$($b.controllerMode) SE=v$($b.extender) ${age}s ago")
     if ($b.error) { Write-Host "    error: $($b.error)" }
+    # Which language the layer speaks, and where that came from. The first thing a report from
+    # somebody playing in a language nobody here has heard needs to establish.
+    if ($b.lang) {
+        $why = if ($b.langForced) { "A11y\lang.txt" } else { "game=$($b.gameLanguage)" }
+        Line "language" $true "$($b.lang) ($why)"
+    }
 } else {
     Line "bootstrap" $false "no boot.json - the client bootstrap never ran"
 }

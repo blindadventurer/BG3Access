@@ -109,6 +109,11 @@ local function report(state, extra)
         state = state,
         modules = extra and extra.modules or nil,
         error = extra and extra.error or nil,
+        -- Which language the layer decided on, and what the game said. The first question a
+        -- report from a stranger has to answer is which of the two was wrong.
+        lang = G.Lang ~= nil and G.Lang.lang or nil,
+        gameLanguage = G.Lang ~= nil and G.Lang.language or nil,
+        langForced = G.Lang ~= nil and G.Lang.forced or nil,
         controllerMode = soft(function() return Ext.Utils.GetGlobalSwitches().ControllerMode end),
         extender = soft(Ext.Utils.Version),
         game = soft(Ext.Utils.GameVersion),
