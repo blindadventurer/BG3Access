@@ -280,6 +280,30 @@ category instead.
   hard for a party of this level, and the one at the end of a day that says somebody in camp
   still wants to talk. About fifteen of them carry every point of no return in the game. The
   layer reads them out, in the game's own words, and **never answers them for you.**
+- **Levelling up**, which is the screen where a wrong choice is permanent and until now the
+  least readable one in the game. Half of it was always spoken — the headings, the paragraph,
+  the character sheet down the right-hand side — and the half that mattered was silent: what
+  you are actually choosing between. A spell on offer is an icon and nothing else. There is no
+  caption anywhere in the row, in the template or in the panel, so the cursor moved over a grid
+  of thirty of them and the layer had nothing to say.
+
+  Now each one says its name, what it costs, how far it reaches, whether it is an attack or a
+  save, what damage it does and which school it belongs to — "Пылающие руки, действие, ячейка
+  1 круга, дальность 5 м, спасбросок Ловкости, урон 3к6 огнём, воплощение, 1 из 17" — and
+  **Delete** gives the game's own description of it at length. An unfilled slot says "пусто"
+  rather than nothing, so you can hear how many choices are still yours to make.
+
+  **Page Up and Page Down survey the whole thing** without moving the cursor: the step you are
+  on, how many of its slots are filled, then every choice numbered the way the cursor counts
+  them, then the character sheet. Spells you cannot take — usually because you already know
+  them — are listed too, marked "недоступно"; the cursor cannot reach those, so this is the
+  only way to hear them.
+
+  The screen is a sequence rather than a set of tabs: finishing one selection puts the next in
+  front of you with no key pressed and nothing said. Each new step is now announced with how
+  much of it is left ("Заклинания, выбрано 0 из 2"), and when the last choice is made the layer
+  says so — that is the moment the button at the bottom starts working, and nothing else tells
+  you. **End** answers the same question at any time: what is still undecided, then the sheet.
 - Panels the controller interface opens: the character sheet, the inventory, the radial menus,
   the confirmation boxes.
 

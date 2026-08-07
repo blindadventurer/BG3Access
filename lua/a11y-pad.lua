@@ -617,6 +617,13 @@ M.SCREEN_TITLES = {
     -- is the value of the first spinner, so arriving on it announced "По выбору".
     CharacterCreation_c = "Создание персонажа",
     CharacterCreation = "Создание персонажа",
+    -- Levelling up is built from the same panels and has the same problem: its first string
+    -- is the heading of whichever step the sequence happens to be on ("Заклинания"), which
+    -- says what the player is choosing and not that a level is being taken at all.
+    CharacterLevelUp_c = "Повышение уровня",
+    CharacterLevelUp = "Повышение уровня",
+    CharacterRespec_c = "Перераспределение",
+    CharacterFullRespec_c = "Пересоздание персонажа",
     -- The loot panel's first string is the weight readout ("49,1"), which as a title says
     -- nothing about what has just opened in front of the player.
     Container_c = "Контейнер",
@@ -1391,6 +1398,14 @@ function M.detailsLines()
         local lines = soft(function() return M.saveDetails(a.node, nil, str(a.name)) end)
         if lines ~= nil and #lines > 0 then return lines end
     end
+    -- On a level-up the question is about the choice under the cursor and not about the panel
+    -- around it: the panel says what kind of thing is being chosen, and the row says nothing
+    -- at all without being asked. First, and on its own.
+    if M.LEVELUP_SCREENS ~= nil and M.LEVELUP_SCREENS[str(a.name)] then
+        local lines = soft(function() return M.levelUpDetails(a.node) end)
+        if lines ~= nil and #lines > 0 then return lines end
+    end
+
     local marks = landmarks(a.node)
     local out = {}
     -- On the options screen this key is the one that answers "say that again, all of it".
@@ -1427,6 +1442,18 @@ function M.summaryLines()
     local marks = landmarks(a.node)
     if marks.summary == nil then return nil end
     local t = visibleScan(marks.summary, 900, 80).texts
+    -- On a level-up the character sheet is only half the answer. The other half is what is
+    -- still undecided - which is why the button will not let the level be taken, and the one
+    -- thing this screen makes unanswerable for somebody who cannot see the red headings.
+    if M.LEVELUP_SCREENS ~= nil and M.LEVELUP_SCREENS[str(a.name)] then
+        local todo = soft(function() return M.levelUpTodo(a.node) end)
+        if todo ~= nil then
+            local out = {}
+            for i = 1, #todo do out[#out + 1] = todo[i] end
+            for i = 1, #t do out[#out + 1] = t[i] end
+            return out
+        end
+    end
     if #t == 0 then return nil end
     return t
 end
@@ -2259,6 +2286,13 @@ function M.linesOf(a)
         local lines = soft(function() return M.saveScreenLines(a.node, str(a.name)) end)
         if lines ~= nil and #lines > 0 then return lines end
     end
+    -- Levelling up is the other screen whose content is not its text: what is being chosen
+    -- between is a list of models with a generated icon each, and reading only the strings
+    -- gives the headings and the character sheet and not one of the choices.
+    if a.node ~= nil and M.LEVELUP_SCREENS ~= nil and M.LEVELUP_SCREENS[str(a.name)] then
+        local lines = soft(function() return M.levelUpLines(a.node) end)
+        if lines ~= nil and #lines > 0 then return lines end
+    end
     return a.texts or {}
 end
 
@@ -2957,7 +2991,12 @@ local function damageWords(s)
         if base ~= nil then half, dice = true, base end
 
         local what
-        if dice:match("^%d+d%d+$") or dice:match("^%d+$") then
+        -- Anything built out of digits and dice is a number, however many terms it has.
+        -- The first version asked for exactly `NdM` or a plain number, and `3d4+3` - which
+        -- is Magic Missile, and the shape of most damage in the game - matched neither, so it
+        -- fell through to the branch for weapon symbols and came out as "урон оружия,
+        -- силовой". Found on the level-up screen, where a spell is chosen on what it does.
+        if dice:match("^%d") and dice:match("^[%dd%+%-]+$") then
             what = dice:gsub("d", "к")
             local kw = DAMAGE_RU[kind]
             if kw ~= nil then what = what .. " " .. kw end
@@ -3090,7 +3129,14 @@ function M.spellFacts(id)
     local lvl = tonumber(str(f("Level")))
     local school = SCHOOL_RU[str(f("SpellSchool"))]
     if lvl ~= nil and lvl > 0 then
-        out[#out + 1] = "заклинание " .. lvl .. " круга" .. (school and (", " .. school) or "")
+        -- The cost has usually said the circle already ("ячейка 1 круга"), and on a screen
+        -- that is nothing but spells - which is what levelling up is - hearing "1 круга"
+        -- twice in every row is the kind of noise a listener stops parsing.
+        if cost ~= nil and cost:find("круга", 1, true) then
+            if school ~= nil then out[#out + 1] = school end
+        else
+            out[#out + 1] = "заклинание " .. lvl .. " круга" .. (school and (", " .. school) or "")
+        end
     elseif school ~= nil then
         out[#out + 1] = "заговор, " .. school
     end
@@ -3141,6 +3187,627 @@ function M.spellLines(id)
             end
         end
     end
+    if #out == 0 then return nil end
+    return out
+end
+
+-- Levelling up ----------------------------------------------------------------------
+--
+-- `CharacterLevelUp_c` is the screen where a wrong choice is permanent, and until now it was
+-- the least readable one in the game. Half of it was already spoken, because the panel's
+-- headings and the character sheet beside it are ordinary text; the other half - what the
+-- player is actually choosing between - is not text at all.
+--
+-- The markup says why. A spell on offer is
+--
+--     <DataTemplate x:Key="selectableSpell" DataType="{x:Type ls:VMSpellReference}">
+--       <ls:LSButton x:Name="spellButton" Template="{StaticResource availableSpellTemplate}"
+--
+-- and `availableSpellTemplate` is an icon, a highlight and a focus frame. There is no caption
+-- anywhere in the row, in the template, or in the panel: the name lives on the record the
+-- template is bound to, as `Spell.Name`, and that is a loca handle. So the focus landed on a
+-- control whose entire readable content was its own `x:Name`, and the layer said
+-- "spellButton" or, more often, nothing.
+--
+-- The screen's own shape, from `Mods/MainUI/GUI/Pages/CharacterLevelUp_c.xaml`:
+--
+--   ls.UIWidget CharacterLevelUp_c        its data context is the whole level-up model
+--     Control levelUpControl > Grid levelUp
+--       Grid leftSidePanels
+--         ContentControl gameplaySubPanel   the step in play - VMSpellSelector and friends
+--         Control gameplayPanel             the tab's own panel, when a tab is selected
+--       Grid tabNavigation > ListBox gameplayTabs
+--         ListBoxItem levelupTab classTab subClassTab raceTab deityTab skillsTab
+--                     expertiseTab spellReplaceTab featTab featDetailsTab spellPrepTab
+--       Grid summary > … summaryPanel       the character sheet
+--
+-- Two things about that strip are worth writing down, because both cost a wrong guess first.
+-- Its items carry **no text**, only `Tag="skills"`, `Tag="feat"` and so on - the tab is an
+-- icon - so `tabItems`, which drops anything it cannot read a string out of, comes back
+-- empty and `tabState` returns nil. And while a sub-selector is open the strip reports
+-- `SelectedIndex = -1`, because level-up is a *sequence* driven by `SubListBoxBehavior` and
+-- not a set of tabs the player flips between. Which is why the step is named from the
+-- sub-panel's own record here, and the tab strip only used when the game has selected one.
+
+-- The steps of levelling up, named by the Tag the markup keys every panel off. Used when the
+-- strip has a selection; the sub-selectors name themselves.
+local LEVELUP_TABS = {
+    levelup = "Новый уровень", class = "Класс", subclass = "Подкласс",
+    race = "Раса", deity = "Божество", draconic = "Драконья кровь",
+    draconicDragonborn = "Драконья кровь", skills = "Навыки",
+    expertise = "Компетентность", spellreplace = "Замена заклинания",
+    feat = "Черта", featdetails = "Черта", spellprep = "Подготовка заклинаний",
+}
+
+local ABILITY_RU = {
+    Strength = "Сила", Dexterity = "Ловкость", Constitution = "Выносливость",
+    Intelligence = "Интеллект", Wisdom = "Мудрость", Charisma = "Харизма",
+}
+
+M.LEVELUP_SCREENS = {
+    CharacterLevelUp_c = true, CharacterLevelUp = true,
+    CharacterRespec_c = true, CharacterFullRespec_c = true,
+}
+
+M.spellByName = nil     -- loca handle of a spell's name -> its stats id
+
+--- Every spell in the game, keyed by the handle its name is displayed under.
+---
+--- Not `spellIndex`, and the difference is the whole point of having both: that one is built
+--- from the character's own spell book, which on this screen holds precisely the spells that
+--- are *not* on offer. The choice is between spells they have never had.
+---
+--- Measured before it was written, because a second-long freeze on a keypress is not
+--- something to ship without knowing about: 4614 `SpellData` entries listed in 18 ms and
+--- 2265 of them named in another 21 ms. So it is built once and kept - stats do not change
+--- inside a session - and the first press that needs it pays 40 ms.
+---
+--- The handles differ by a version suffix: stats say `h5c7a28e3…;3` where the interface says
+--- `h5c7a28e3…`, so the key is the part before the semicolon.
+local function spellByName()
+    if M.spellByName ~= nil then return M.spellByName end
+    local ids = soft(Ext.Stats.GetStats, "SpellData")
+    if ids == nil then return nil end
+    local n = tonumber(soft(function() return #ids end)) or 0
+    local by = {}
+    for i = 1, n do
+        local id = soft(function() return ids[i] end)
+        local e = id ~= nil and soft(Ext.Stats.Get, id) or nil
+        local h = e ~= nil and soft(function() return e.DisplayName end) or nil
+        if type(h) == "string" and h ~= "" then
+            local bare = h:match("^([^;]+)") or h
+            if by[bare] == nil then by[bare] = id end
+        end
+    end
+    M.spellByName = by
+    return by
+end
+M.spellsByName = spellByName
+
+--- The record behind a control that has none of its own children to give it away.
+---
+--- `dataOf` works where the model arrives as a non-element child, which is how an
+--- `ItemsControl` exposes its items and how the roll panel keeps its numbers. A generated row
+--- is not like that: its context is *inherited*, so it appears in neither its properties nor
+--- its children, and `GetProperty("DataContext")` on the button comes back nil.
+---
+--- The way through is the tooltip. Every one of these rows carries one, and a tooltip is an
+--- object with a `TemplatedParent` - the row as the tooltip sees it - which does carry
+--- `DataContext`. Nothing is asked for by a guessed name: the button's own properties already
+--- hand back `ToolTip`, and two `GetAllProperties` calls do the rest.
+---
+--- Kept as a fallback rather than the answer, because a tooltip declared as a StaticResource
+--- could in principle be shared between rows, and a name that is confidently one row off is
+--- worse on this screen than no name at all. `rowAt` is what is trusted; this is what answers
+--- when there is no list to count within.
+local function dataBehind(o)
+    if o == nil then return nil end
+    local p = props(o)
+    if type(p.DataContext) == "userdata" then
+        local d = soft(function() return p.DataContext:GetAllProperties() end)
+        if type(d) == "table" then return d end
+    end
+    local own = dataOf(o)
+    if own ~= nil then return own end
+    if type(p.ToolTip) ~= "userdata" then return nil end
+    local tip = soft(function() return p.ToolTip:GetAllProperties() end)
+    if type(tip) ~= "table" or type(tip.TemplatedParent) ~= "userdata" then return nil end
+    local tp = soft(function() return tip.TemplatedParent:GetAllProperties() end)
+    if type(tp) ~= "table" or type(tp.DataContext) ~= "userdata" then return nil end
+    local d = soft(function() return tp.DataContext:GetAllProperties() end)
+    if type(d) == "table" then return d end
+    return nil
+end
+M.dataBehind = dataBehind
+
+--- Is this a model rather than an element: no size, no visibility, only a domain.
+local function isRecord(p)
+    return type(p) == "table" and p.ActualWidth == nil and p.IsVisible == nil
+end
+
+--- The row under the cursor, taken from where it sits rather than from what it is bound to.
+---
+--- An `ItemsControl` hands back its items as non-element children, after the one visual child
+--- that holds the generated rows, and the rows are generated in that same order. So the index
+--- of the focused row among its siblings in the panel is the index of its record in the list -
+--- which is a fact about how the control is built rather than about any one template, and
+--- gives the position ("3 из 12") in the same walk.
+---
+--- Unavailable spells are still generated: the list's `ItemContainerStyle` collapses them on
+--- `NotAvailable`, so they keep their place among the siblings and the indices still line up -
+--- but the player never lands on one, so they are left out of the count. Otherwise a grid of
+--- twelve reachable spells would announce itself as thirty.
+local function rowAt(widgetNode, focused)
+    if not pathTo(widgetNode, focused) then return nil end
+    local chain = M.focusPath
+    local idx = nil
+    for i = #chain - 1, 1, -1 do
+        local parent, kid = chain[i], chain[i + 1]
+        local cls = select(1, A.splitToString(A.realType(parent)))
+        local ch, cn = A.kids(parent)
+        if idx == nil and cls:find("Panel", 1, true) then
+            for j = 1, cn do
+                if tostring(ch[j]) == tostring(kid) then idx = j break end
+            end
+        end
+        if cls:find("ItemsControl", 1, true) then
+            local recs = {}
+            for j = 1, cn do
+                local kp = props(ch[j])
+                if isRecord(kp) then recs[#recs + 1] = kp end
+            end
+            local mine = idx ~= nil and recs[idx] or nil
+            local pos, total = nil, 0
+            for j = 1, #recs do
+                if recs[j].NotAvailable ~= true then
+                    total = total + 1
+                    if j == idx then pos = total end
+                end
+            end
+            if pos == nil then pos, total = idx, #recs end
+            return mine, pos, total, str(props(parent).Name)
+        end
+    end
+    return nil
+end
+M.rowAt = rowAt
+
+--- One spell on offer, said the way somebody choosing between thirty of them needs it.
+---
+--- The name is a handle on the record and translates directly. Everything else - what it
+--- costs, how far it reaches, whether it is an attack or a save, what it does - comes from
+--- the stats entry, which is the same source the hotbar's wheel already reads, so a spell
+--- says the same things here as it will when it is cast.
+local function spellRefLine(rec, short)
+    if type(rec) ~= "table" then return nil end
+    local spell = rec.Spell
+    if type(spell) ~= "userdata" then
+        -- An empty slot in the chosen row. `Additions` is a fixed-length list of places, so
+        -- this is not a missing spell but a choice not yet made, and saying so is the point.
+        return "пусто"
+    end
+    local sp = soft(function() return spell:GetAllProperties() end)
+    if type(sp) ~= "table" then return nil end
+    if sp.IsEmpty == true then return "пусто" end
+
+    local handle = str(sp.Name)
+    local name = loca(handle)
+    if type(name) ~= "string" or name == "" or name:find("^h%x") then name = nil end
+    local parts = {}
+    if name ~= nil then parts[#parts + 1] = name end
+    if rec.Selected == true then parts[#parts + 1] = "выбрано" end
+    if rec.NotAvailable == true then parts[#parts + 1] = "недоступно" end
+    if short then
+        if #parts == 0 then return nil end
+        return table.concat(parts, ", ")
+    end
+
+    local by = spellByName()
+    local id = by ~= nil and by[handle] or M.spellIdFor(handle)
+    local facts = id ~= nil and M.spellFacts(id) or nil
+    if facts ~= nil then
+        parts[#parts + 1] = facts
+    else
+        -- No stats entry behind it. The record still knows the two things that place a spell
+        -- for somebody deciding: which circle it belongs to and which school it is of.
+        local lvl = tonumber(str(sp.Level))
+        local school = SCHOOL_RU[str(sp.SpellSchool)]
+        if lvl ~= nil and lvl > 0 then
+            parts[#parts + 1] = "заклинание " .. lvl .. " круга" .. (school and (", " .. school) or "")
+        elseif school ~= nil then
+            parts[#parts + 1] = "заговор, " .. school
+        end
+    end
+    if #parts == 0 then return nil end
+    return table.concat(parts, ", ")
+end
+M.spellRefLine = spellRefLine
+
+--- A row of this screen, whatever kind of row it is, from the fields the record carries.
+---
+--- Deliberately dispatched on the fields present rather than on the view model's class. The
+--- screen has a dozen of them - spells, passives, feats, skills, abilities, equipment - and
+--- they are not all reachable in one session to be measured; a reader keyed to the fields
+--- names whichever of them the player reaches, and degrades to the name alone where the shape
+--- is one nobody has seen yet.
+local function recordLine(rec, short)
+    if type(rec) ~= "table" then return nil end
+
+    if rec.Spell ~= nil or (rec.Selected ~= nil and rec.NotAvailable ~= nil) then
+        local line = spellRefLine(rec, short)
+        if line ~= nil then return line end
+    end
+
+    local parts = {}
+
+    -- An ability: the value, what it modifies, and whether the cursor can still change it.
+    -- Measured shape - Ability, BaseValue, Value, Modifier, Improvement, CanIncrease,
+    -- CanDecrease, IsPrimary, HasSavingThrowProficiency.
+    local ability = ABILITY_RU[str(rec.Ability)]
+    if ability ~= nil and (rec.Value ~= nil or rec.BaseValue ~= nil) then
+        local v = tonumber(str(rec.Value)) or tonumber(str(rec.BaseValue))
+        parts[#parts + 1] = ability
+        if v ~= nil then parts[#parts + 1] = tostring(math.floor(v + 0.5)) end
+        local mod = tonumber(str(rec.Modifier))
+        if mod ~= nil then
+            parts[#parts + 1] = "модификатор " .. (mod >= 0 and "+" or "") .. tostring(mod)
+        end
+        if rec.CanIncrease == true then parts[#parts + 1] = "можно повысить" end
+        if rec.CanDecrease == true then parts[#parts + 1] = "можно понизить" end
+        return table.concat(parts, ", ")
+    end
+
+    -- Everything else that has a name: passives, feats, skills, classes, subclasses. The
+    -- record's own name field is a handle, and which field it is depends on the model, so
+    -- the first one that translates wins.
+    local name = nil
+    for _, field in ipairs({ "Name", "Title", "DisplayName", "Label" }) do
+        local v = loca(str(rec[field]))
+        if type(v) == "string" and v ~= "" and v ~= "nil" and not v:find("^h%x")
+           and not v:find("^ls::") and not v:find("^ResStr_") then
+            name = v
+            break
+        end
+    end
+    if name == nil then return nil end
+    parts[#parts + 1] = name
+
+    -- Whether it is already taken, and whether it can be. Three different models spell the
+    -- same two facts three different ways, so all of them are looked at.
+    if rec.Selected == true or rec.IsSelected == true or rec.Value == 1.0 then
+        parts[#parts + 1] = "выбрано"
+    end
+    if rec.Enabled == false or rec.NotAvailable == true or rec.IsEnabled == false then
+        parts[#parts + 1] = "недоступно"
+    end
+    local ab = ABILITY_RU[str(rec.Ability)]
+    if ab ~= nil then parts[#parts + 1] = ab end
+
+    if not short then
+        local why = nil
+        for _, field in ipairs({ "Description", "Tooltip", "ExtraDescription" }) do
+            local v = unmarkup(loca(str(rec[field])))
+            if type(v) == "string" and v ~= "" and v ~= "nil" and not v:find("^h%x")
+               and not v:find("^ls::") then
+                why = (#v > 220) and (v:sub(1, 220) .. "…") or v
+                break
+            end
+        end
+        if why ~= nil then parts[#parts + 1] = why end
+    end
+    return table.concat(parts, ", ")
+end
+M.recordLine = recordLine
+
+--- What the focused row of a level-up screen is, name and place in its list.
+---
+--- Returned as two values: the line to say, and a key that changes whenever the cursor moves.
+--- They differ on purpose - two empty slots read alike and are not the same slot, so the key
+--- carries the position even when the wording does not need to.
+function M.levelUpFocus(widgetNode, focused)
+    local rec, pos, total, list = rowAt(widgetNode, focused)
+    if rec == nil then
+        rec = dataBehind(focused)
+        if rec == nil then return nil end
+        local line = recordLine(rec)
+        if line == nil then return nil end
+        return line, line
+    end
+    local line = recordLine(rec)
+    if line == nil then return nil end
+    -- The chosen row and the row of what is on offer read alike and mean opposite things:
+    -- one is what the character will have, the other is what they might. The panel names both
+    -- ("Выбрано", "Доступно") and the cursor crossing between them is silent otherwise.
+    if list == "chosenSpells" and line ~= "пусто" and not line:find("выбрано", 1, true) then
+        line = line .. ", выбрано"
+    end
+    if pos ~= nil and total ~= nil and total > 1 then
+        line = line .. ", " .. pos .. " из " .. total
+    end
+    return line, tostring(list) .. "|" .. tostring(pos) .. "|" .. line
+end
+
+--- The step of levelling up the player is on, and how much of it is left to do.
+---
+--- Said when it changes, and it changes on its own: this screen is a sequence, so finishing
+--- one selection puts the next one in front of the player with no key pressed and nothing
+--- said. The header and the paragraph under it are ordinary text and were already being read
+--- as part of the screen; what was missing is that they had *changed*.
+---
+--- The count comes from the model rather than from the panel. `AddedCount` against the length
+--- of `Additions` is how many of the slots are filled, and it is the one number that answers
+--- "can I move on yet" - which on a screen with no visible progress is otherwise unanswerable
+--- except by trying.
+function M.levelUpStep(widgetNode)
+    local marks = landmarks(widgetNode, 400)
+    local sub = marks.sub
+    if sub == nil then return nil end
+    local rec = dataOf(sub)
+    if type(rec) ~= "table" then return nil end
+
+    local title = loca(str(rec.Title))
+    if type(title) ~= "string" or title == "" or title:find("^h%x") then title = nil end
+    local parts = {}
+    if title ~= nil then parts[#parts + 1] = title end
+
+    -- How many places there are to fill, counted off the list the panel draws them from,
+    -- because the record carries how many are taken and not how many there are.
+    local chosen = M.namedNode(sub, "chosenSpells", 8)
+    local slots, filled = 0, tonumber(str(rec.AddedCount)) or 0
+    if chosen ~= nil then
+        local ch, cn = A.kids(chosen)
+        for i = 1, cn do
+            if isRecord(props(ch[i])) then slots = slots + 1 end
+        end
+    end
+    if slots > 0 then
+        parts[#parts + 1] = "выбрано " .. filled .. " из " .. slots
+    elseif rec.IsComplete == false then
+        parts[#parts + 1] = "нужно выбрать"
+    end
+    if #parts == 0 then return nil end
+    return table.concat(parts, ", "), (title or "") .. "|" .. filled .. "/" .. slots
+end
+
+M.lvlStepKey = nil
+M.lvlStepWait = 0
+M.lvlDone = nil
+
+--- Watch the sequence move. Speaks the new step, behind whatever is being said.
+---
+--- Not on every pass: the landmark walk behind it is ~130 nodes, which is nothing for a
+--- keypress and too much for a tick, and the step only ever changes when a selection is
+--- finished. Every fourth pass is about a second, and the row the cursor lands on is
+--- announced by the ordinary reader in the meantime.
+function M.levelUpTick(widget)
+    if widget == nil or not M.LEVELUP_SCREENS[str(widget.name)] then
+        M.lvlStepKey, M.lvlStepWait, M.lvlDone = nil, 0, nil
+        return false
+    end
+    -- Except the first pass on the screen, which is the one the player is waiting on.
+    if M.lvlStepKey ~= nil then
+        M.lvlStepWait = M.lvlStepWait + 1
+        if M.lvlStepWait % 4 ~= 0 then return false end
+    end
+    -- The moment the last choice is made, which is the moment the button at the bottom
+    -- starts working. Nothing announces it: the screen turns a heading from red to white and
+    -- enables a control the player cannot see, so without this the only way to find out is to
+    -- press the button and listen for whether anything happened.
+    local vm = dataOf(widget.node)
+    if type(vm) == "table" then
+        local done = (vm.IsLevelUpComplete == true)
+        if done ~= M.lvlDone then
+            local was = M.lvlDone
+            M.lvlDone = done
+            if done and was ~= nil then
+                pend("Все выборы сделаны. Можно завершить повышение уровня")
+                M.lvlStepKey = "<done>"
+                return true
+            end
+        end
+    end
+
+    local line, key = M.levelUpStep(widget.node)
+    if key == nil or key == M.lvlStepKey then return false end
+    M.lvlStepKey = key
+    _P("[pad] level-up step: " .. tostring(line))
+    -- Queued into the pass's own utterance rather than spoken here. The bridge carries one
+    -- line per tick (E6), so a `say` of its own would be overwritten by the focus line a few
+    -- statements later - which is exactly how no screen title was ever heard.
+    pend(line)
+    -- The step changed under the cursor, so whatever the cursor is on has to be said again
+    -- even if it happens to read the same as the last step's first row.
+    M.lastFocus = nil
+    return true
+end
+
+--- The choice under the cursor at length: the facts, then the game's own prose about it.
+---
+--- The spoken line is one utterance and has to stay one; this is what the "tell me more" key
+--- is for, and on a screen where the choice is permanent it is the difference between picking
+--- a spell by its name and picking it knowing what it does.
+function M.levelUpDetails(node)
+    local focused = widgetFocus(node)
+    if focused == nil then return nil end
+    local rec = select(1, rowAt(node, focused)) or dataBehind(focused)
+    if type(rec) ~= "table" then return nil end
+
+    local out = {}
+    if type(rec.Spell) == "userdata" then
+        local sp = soft(function() return rec.Spell:GetAllProperties() end)
+        if type(sp) == "table" then
+            local handle = str(sp.Name)
+            local name = loca(handle)
+            if type(name) == "string" and name ~= "" and not name:find("^h%x") then
+                out[#out + 1] = name
+            end
+            local by = spellByName()
+            local id = by ~= nil and by[handle] or M.spellIdFor(handle)
+            if id ~= nil then
+                local lines = M.spellLines(id)
+                if lines ~= nil then
+                    for i = 1, #lines do out[#out + 1] = lines[i] end
+                end
+            end
+        end
+    end
+    if #out == 0 then
+        local line = recordLine(rec)
+        if line ~= nil then out[#out + 1] = line end
+    end
+    -- An empty slot has nothing of its own to say, and "пусто" is what the player already
+    -- heard. What they are asking for there is what the slot is waiting to be filled with,
+    -- which is the step's own question.
+    if #out == 1 and out[1] == "пусто" then
+        local step = M.levelUpStep(node)
+        if step ~= nil then out[#out + 1] = step end
+        local marks = landmarks(node, 400)
+        if marks.sub ~= nil then
+            local prose = proseUnder(marks.sub, 2, 300)
+            for i = 1, #prose do out[#out + 1] = prose[i] end
+        end
+    end
+    if #out == 0 then return nil end
+    return out
+end
+
+-- The lists a level-up panel is made of, and what to call each of them. The panel labels its
+-- own sections in text ("Выбрано", "Доступно"), but those are separate nodes several levels
+-- from the list they belong to, so a list read on its own would arrive unlabelled.
+local LEVELUP_LISTS = {
+    chosenSpells = "Выбрано", availableSpells = "Доступно",
+    availableSpellsByLevel = "Доступно", classPassiveActions = "Действия",
+    classPassiveCantrips = "Заговоры", classPassiveSpells = "Заклинания",
+    classProgressionActions = "Действия", classProgressionCantrips = "Заговоры",
+    classProgressionSpells = "Заклинания", subclassPassiveActions = "Действия",
+    subclassPassiveCantrips = "Заговоры", subclassPassiveSpells = "Заклинания",
+    featureSpells = "Умения", subRaceFeatureSpells = "Умения",
+}
+
+--- The whole screen as lines to walk with the review cursor.
+---
+--- The ordinary capture is every string in the widget, and on this screen that is the
+--- headings, the paragraph and the character sheet - true, and missing the only part the
+--- player came for. What is being chosen between is not text: it is a list of records with a
+--- generated icon each. So the lists are read from the models and put in front of the text.
+---
+--- Which makes PageUp and PageDown the way to survey a level-up without moving the cursor
+--- through thirty spells one at a time - and the way to hear a spell that is greyed out,
+--- which the cursor cannot reach at all.
+function M.levelUpLines(node)
+    local out, seen = {}, {}
+    local function add(s)
+        if type(s) ~= "string" or s == "" or seen[s] then return end
+        seen[s] = true
+        out[#out + 1] = s
+    end
+
+    local step = M.levelUpStep(node)
+    if step ~= nil then add(step) end
+
+    local marks = landmarks(node, 400)
+    local left = { n = 4000 }
+    local function rec(o, d)
+        if o == nil or d > 20 or left.n <= 0 then return end
+        left.n = left.n - 1
+        local p = props(o)
+        if p.IsVisible == false then return end
+        local cls = select(1, A.splitToString(A.realType(o)))
+        -- A generated row is an icon and a frame - thirty of them are most of the panel's
+        -- nodes and none of them holds a word. The models are read off the list instead.
+        if cls:find("LSButton", 1, true) or A.NO_TEXT[cls] then return end
+        if cls:find("ItemsControl", 1, true) then
+            local label = LEVELUP_LISTS[str(p.Name)]
+            local ch, cn = A.kids(o)
+            -- Numbered the way the cursor counts, which means numbering only what the cursor
+            -- can reach: an unavailable spell is collapsed by the list's own container style,
+            -- so it is on the screen in no sense at all and giving it a number would put every
+            -- row after it out of step with "3 из 16". It is still listed - "недоступно" on a
+            -- spell the character already knows is an answer - just not counted.
+            local rows, avail, hidden = {}, 0, {}
+            for i = 1, cn do
+                local kp = props(ch[i])
+                if isRecord(kp) then
+                    local line = recordLine(kp, true)
+                    if line ~= nil then
+                        if kp.NotAvailable == true then
+                            hidden[#hidden + 1] = line
+                        else
+                            avail = avail + 1
+                            rows[#rows + 1] = avail .. ". " .. line
+                        end
+                    end
+                end
+            end
+            if #rows > 0 or #hidden > 0 then
+                if label ~= nil then add(label .. ": " .. avail) end
+                for i = 1, #rows do add(rows[i]) end
+                for i = 1, #hidden do add(hidden[i]) end
+            end
+        end
+        local ch, cn = A.kids(o)
+        for i = 1, cn do rec(ch[i], d + 1) end
+    end
+    for _, key in ipairs({ "sub", "panel" }) do
+        if marks[key] ~= nil then rec(marks[key], 0) end
+    end
+
+    -- And then the screen's own words, which say what the step is asking for.
+    local info = visibleScan(node, M.nodeCap, 80)
+    for i = 1, #info.texts do add(info.texts[i]) end
+
+    local todo = M.levelUpTodo(node)
+    if todo ~= nil then for i = 1, #todo do add(todo[i]) end end
+
+    if #out == 0 then return nil end
+    return out
+end
+
+--- Everything still to be decided before the level can be taken.
+---
+--- The widget's own model holds it all, and it is the answer to the question this screen
+--- makes hardest for somebody who cannot see it: not "what am I on" but "why will it not let
+--- me finish". Read on the screen-summary key alongside the character sheet.
+function M.levelUpTodo(widgetNode)
+    local rec = dataOf(widgetNode)
+    if type(rec) ~= "table" then return nil end
+    local out = {}
+
+    local from = tonumber(str(rec.CurrentCharacterLevel))
+    local to = tonumber(str(rec.AvailableCharacterLevel))
+    if from ~= nil and to ~= nil and to > from then
+        out[#out + 1] = "Уровень " .. from .. ", повышение до " .. to
+    end
+
+    -- The step in play first: it is the one thing on the list the player can act on right now.
+    local step = M.levelUpStep(widgetNode)
+    if step ~= nil then out[#out + 1] = step end
+
+    local function group(o, what)
+        if type(o) ~= "userdata" then return end
+        local p = soft(function() return o:GetAllProperties() end)
+        if type(p) ~= "table" then return end
+        local max = tonumber(str(p.MaxSelectedSkillCount)) or 0
+        local sel = tonumber(str(p.SelectedSkillCount)) or 0
+        if max > 0 then out[#out + 1] = what .. ": " .. sel .. " из " .. max end
+    end
+    if type(rec.AllSkills) == "userdata" then
+        local all = soft(function() return rec.AllSkills:GetAllProperties() end)
+        if type(all) == "table" then
+            group(all.ClassProficientSkills, "Навыки класса")
+            group(all.RaceProficientSkills, "Навыки расы")
+            group(all.ExpertiseSkills, "Компетентность")
+        end
+    end
+
+    local unused = tonumber(str(rec.UnusedAbilityPoints))
+    if unused ~= nil and unused > 0 then
+        out[#out + 1] = "Нераспределённых очков характеристик: " .. unused
+    end
+    if rec.CanSelectFeat == true then out[#out + 1] = "Можно выбрать черту" end
+    if rec.IsLevelUpComplete == true then out[#out + 1] = "Все выборы сделаны"
+    elseif rec.IsLevelUpComplete == false then out[#out + 1] = "Выбор ещё не завершён" end
+
     if #out == 0 then return nil end
     return out
 end
@@ -4915,6 +5582,11 @@ local function readerTick()
     end
     M.screenUp = (M.screenBig == true)
 
+    -- Levelling up is a sequence, not a set of tabs: finishing one selection puts the next in
+    -- front of the player with no key pressed. Checked before the focus is read, so the step
+    -- leads the row it moved the cursor onto.
+    soft(function() return M.levelUpTick(widget) end)
+
     -- A save screen is read from its model before anything else on it is considered. The
     -- focus here is a step behind the game - with a campaign expanded it stays on the header
     -- while the cursor is already three saves down the list - so following it would announce
@@ -5065,6 +5737,18 @@ local function readerTick()
             -- caption would itself look like a change and every row would be said twice.
             dedup = tostring(caption) .. "|" .. value
             pendingCaption = caption
+        end
+    end
+    -- A row of the level-up screen carries no text at all - it is an icon, a highlight and a
+    -- focus frame - so everything sayable about it is on the record the template is bound to.
+    -- Ahead of focusText, which would otherwise announce the control's own x:Name.
+    if text == nil and M.LEVELUP_SCREENS[str(widget.name)] then
+        local line, key = M.levelUpFocus(widget.node, focused)
+        if line ~= nil then
+            text = line
+            -- Two empty slots read the same and are not the same slot, so the key carries
+            -- the position where the wording does not.
+            dedup = key
         end
     end
     if text == nil then text = focusText(focused) end
