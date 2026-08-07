@@ -625,6 +625,10 @@ M.SCREEN_TITLES = {
     -- there is no first string for the rule to take.
     Book_c = T"Book",
     Book = T"Book",
+    -- Its first string is the tab strip, so the rule that takes the first line would announce
+    -- "Обзор" and never the screen the player has just opened.
+    ModBrowser_c = T"Mod manager",
+    ModBrowser = T"Mod manager",
 }
 
 local function screenTitle(a)
@@ -1394,6 +1398,12 @@ function M.detailsLines()
     -- at all without being asked. First, and on its own.
     if M.LEVELUP_SCREENS ~= nil and M.LEVELUP_SCREENS[str(a.name)] then
         local lines = soft(function() return M.levelUpDetails(a.node) end)
+        if lines ~= nil and #lines > 0 then return lines end
+    end
+    -- And on the mod manager, where the row is a record and the screen around it is a filter
+    -- tree nobody asked to hear.
+    if M.MOD_SCREENS ~= nil and M.MOD_SCREENS[str(a.name)] then
+        local lines = soft(function() return M.modDetails(a.node) end)
         if lines ~= nil and #lines > 0 then return lines end
     end
     -- The same on the character panel, where the thing under the cursor is an item and the
@@ -2309,6 +2319,13 @@ function M.linesOf(a)
     -- and not one string, so the ordinary capture gives the sheet's labels and no inventory.
     if a.node ~= nil and M.CHARACTER_PANELS ~= nil and M.CHARACTER_PANELS[str(a.name)] then
         local lines = soft(function() return M.panelLines(a.node) end)
+        if lines ~= nil and #lines > 0 then return lines end
+    end
+    -- The mod manager, where the strings are worse than absent: every mod is four unlabelled
+    -- runs and the hundred and twenty filter categories come with them, so the flat capture is
+    -- longer than the list and answers less.
+    if a.node ~= nil and M.MOD_SCREENS ~= nil and M.MOD_SCREENS[str(a.name)] then
+        local lines = soft(function() return M.modLines(a.node) end)
         if lines ~= nil and #lines > 0 then return lines end
     end
     -- A book is the extreme of the same thing: its tree holds no strings whatsoever, and all
@@ -5583,6 +5600,245 @@ function M.dialogueTick()
     return true
 end
 
+-- The mod manager, read as data ----------------------------------------------------
+--
+-- `ModBrowser_c` is 3062 nodes, and through the ordinary review cursor it reads as 210
+-- strings: two tab names, a memory counter, then every mod on the page flattened into four
+-- unlabelled runs - a title, a download count, a size and a number - and after them a hundred
+-- and twenty filter categories. Everything is said and nothing is answerable. Which of those
+-- numbers belongs to which mod, which row the cursor is on, whether a mod is already
+-- installed: none of it survives being read as a list of strings.
+--
+-- The screen is MVVM like the save list, so the answer is the same one. Measured 2026-08-07 by
+-- dumping the widget with probes/probe-screens.lua:
+--
+--     Grid accountPanel > accountStateLabel   "Ограниченный доступ: вход не выполнен"
+--     ListBox ModList  selIdx=0
+--       …ListBoxItem SEL alt=0 > ContentControl ContentHolder    ← where the Noesis focus sits
+--       DATA  Name=ImpUI (ImprovedUI)  InstallState=Uninstalled  IsInstalled=false
+--             TotalDownloads=11228832  PositiveRating=10202  FileSize=384294  Version=2.1.0.82
+--       DATA  …one per mod, thirty of them, in the order of the rows
+--     StackPanel BottomButtonsPanel
+--       ls.LSButton detailsButton   DATA ControllerInput=ButtonA  IEventID=UIAccept
+--       ls.LSButton subscribeButton DATA ControllerInput=ButtonY  IEventID=UIDelete
+--     DATA  ActiveTabID=Browse  PageCount=348  InDetailsView=false  IsUpdatingModList=false
+--
+-- So the row under the cursor is `SelectedIndex`, everything worth saying about it is a
+-- record, and which pad button does what is a record too rather than a guess. **No text is
+-- taken off this screen at all**, which is why it reads the same in every language - and the
+-- filter tree, which is most of what made the flat reading useless, is simply never visited.
+--
+-- The focus is no help here and that is why following it was not enough: it sits on a
+-- `ContentControl` called ContentHolder whose own text is the word "Grid".
+
+M.MOD_SCREENS = { ModBrowser_c = true, ModBrowser = true }
+
+--- Every data child of a node, in the order the rows are in.
+---
+--- `dataOf` answers with the first one, which is right for a widget that has a model and
+--- wrong for a list whose children *are* the models.
+local function recordsOf(node)
+    local out = {}
+    local ch, cn = A.kids(node)
+    for i = 1, cn do
+        local p = soft(function() return ch[i]:GetAllProperties() end)
+        if type(p) == "table" and p.ActualWidth == nil and p.IsVisible == nil then
+            out[#out + 1] = p
+        end
+    end
+    return out
+end
+M.recordsOf = recordsOf
+
+--- "11228832" as something a voice reads rather than spells.
+local function bigNumber(n)
+    n = tonumber(n)
+    if n == nil then return nil end
+    local s
+    if n >= 1000000 then s = string.format(T"%.1f million", n / 1000000)
+    elseif n >= 1000 then s = string.format(T"%d thousand", math.floor(n / 1000))
+    else return tostring(math.floor(n)) end
+    -- A full stop inside a number is read as the word "point" by a Russian voice.
+    local dec = (Lang ~= nil) and Lang.decimal() or "."
+    if dec ~= "." then s = s:gsub("%.", dec) end
+    return s
+end
+
+--- Thousands, not kibibytes: the game's own row says "384 КБ" for 384294 bytes, and a layer
+--- that answers "375 КБ" beside it is arguing with the screen the player is standing on.
+local function fileSize(n)
+    n = tonumber(n)
+    if n == nil then return nil end
+    if n >= 1000000 then return string.format(T"%d MB", math.floor(n / 1000000 + 0.5)) end
+    return string.format(T"%d KB", math.floor(n / 1000 + 0.5))
+end
+
+-- What the game calls a pad control, said the way a player names it.
+local PAD_NAME = {
+    ButtonA = "A", ButtonB = "B", ButtonX = "X", ButtonY = "Y",
+}
+
+local function padName(s)
+    if s == nil then return nil end
+    s = str(s)
+    if PAD_NAME[s] ~= nil then return PAD_NAME[s] end
+    if s == "LeftShoulder" then return T"left bumper" end
+    if s == "RightShoulder" then return T"right bumper" end
+    if s == "LeftTrigger" then return T"left trigger" end
+    if s == "RightTrigger" then return T"right trigger" end
+    if s == "LeftStickPress" then return T"left stick" end
+    if s == "RightStickPress" then return T"right stick" end
+    return nil
+end
+
+--- What the buttons along the bottom would do, from the game's own bindings.
+---
+--- Each button carries its binding as its data context - `ControllerInput=ButtonA` beside the
+--- caption the player can see - so this is the screen answering "what can I press here"
+--- itself, with nothing hardcoded and nothing to keep up to date.
+function M.modPrompts(node)
+    local strip = M.namedNode(node, "BottomButtonsPanel", 8)
+    if strip == nil then return {} end
+    -- Deduplicated by caption, because `A.kids` hands back the visual children and then the
+    -- logical ones without merging them, and a button is in both - which is how the first
+    -- build read the whole strip out twice in one breath.
+    local out, seen = {}, {}
+    local ch, cn = A.kids(strip)
+    for i = 1, cn do
+        local p = props(ch[i])
+        if p.IsVisible ~= false and p.IsEnabled ~= false then
+            local text = A.collectText(ch[i], 40, 6)[1]
+            if text ~= nil and A.looksLikeText(text) and text ~= "[ForceUpdate]"
+               and not seen[text] then
+                seen[text] = true
+                local d = dataOf(ch[i])
+                local button = d and padName(d.ControllerInput) or nil
+                out[#out + 1] = button and (text .. T" - " .. button) or text
+            end
+        end
+    end
+    return out
+end
+
+--- One mod, said the way a player chooses between them.
+function M.modLine(rec, index, count)
+    local parts = { str(rec.Name) }
+    if rec.IsInstalled == true then
+        parts[#parts + 1] = (rec.EnabledCurrent == true) and T"installed, on" or T"installed, off"
+    else
+        parts[#parts + 1] = T"not installed"
+    end
+    if rec.IsDeprecated == true then parts[#parts + 1] = T"deprecated" end
+    local d = bigNumber(rec.TotalDownloads)
+    if d ~= nil then parts[#parts + 1] = string.format(T"%s downloads", d) end
+    local sz = fileSize(rec.FileSize)
+    if sz ~= nil then parts[#parts + 1] = sz end
+    local r = tonumber(rec.PositiveRating)
+    if r ~= nil and r > 0 then parts[#parts + 1] = string.format(T"rating %d", r) end
+    if rec.Version ~= nil then parts[#parts + 1] = T"version " .. str(rec.Version) end
+    if count ~= nil and count > 1 and index ~= nil then
+        parts[#parts + 1] = index .. T" of " .. count
+    end
+    return table.concat(parts, ", ")
+end
+
+--- The screen as it stands: which tab, which row, and what the account is allowed to do.
+function M.modState(node)
+    local list = M.namedNode(node, "ModList", 10)
+    if list == nil then return nil end
+    local scr = dataOf(node) or {}
+    local recs = recordsOf(list)
+    local idx = tonumber(props(list).SelectedIndex)
+    local index = (idx ~= nil and idx >= 0) and (idx + 1) or nil
+
+    -- The account line is a named node rather than a phrase to recognise: signed out it reads
+    -- "limited access", signed in it is empty and the name sits beside it. Either way it is
+    -- the difference between browsing and being able to install anything, and it is the one
+    -- thing on this screen a player has to be told without asking.
+    local account = nil
+    local label = M.namedNode(node, "accountStateLabel", 8)
+    if label ~= nil then
+        local t = A.collectText(label, 20, 4)[1]
+        if t ~= nil and A.looksLikeText(t) and t ~= "[ForceUpdate]" then account = t end
+    end
+
+    return {
+        tab = str(scr.ActiveTabID),
+        pages = tonumber(scr.PageCount),
+        details = scr.InDetailsView == true,
+        updating = scr.IsUpdatingModList == true,
+        count = #recs,
+        index = index,
+        rec = index and recs[index] or nil,
+        account = account,
+    }
+end
+
+--- The page as a list of mods, for the review cursor to walk.
+function M.modLines(node)
+    local list = M.namedNode(node, "ModList", 10)
+    if list == nil then return nil end
+    local recs = recordsOf(list)
+    local out = {}
+    for i = 1, #recs do out[#out + 1] = M.modLine(recs[i], i, #recs) end
+    return out
+end
+
+--- Everything about the mod under the cursor, on demand.
+function M.modDetails(node)
+    local st = soft(function() return M.modState(node) end)
+    if st == nil then return nil end
+    local out = {}
+    out[#out + 1] = (st.tab == "Installed") and T"Installed" or T"Browse"
+    if st.count > 0 then out[#out + 1] = M.plural(st.count, "mod") end
+    if st.pages ~= nil and st.pages > 1 then out[#out + 1] = M.plural(st.pages, "page") end
+    if st.account ~= nil then out[#out + 1] = st.account end
+    if st.rec ~= nil then out[#out + 1] = M.modLine(st.rec, st.index, st.count) end
+    local prompts = M.modPrompts(node)
+    if #prompts > 0 then out[#out + 1] = T"Actions: " .. table.concat(prompts, ", ") end
+    return out
+end
+
+M.modKey = nil
+
+--- Said when the cursor moves, and once when the screen comes up.
+function M.modTick(widget)
+    if not M.MOD_SCREENS[str(widget.name)] then M.modKey = nil return false end
+    local st = soft(function() return M.modState(widget.node) end)
+    if st == nil then return false end
+    -- Nothing to say while the page is being fetched, and the list underneath is the old one.
+    if st.updating then return false end
+
+    local rec = st.rec
+    local key = tostring(st.tab) .. "|" .. tostring(st.index) .. "|" .. tostring(st.count) ..
+                "|" .. (rec ~= nil and (str(rec.Name) .. "|" .. str(rec.InstallState) ..
+                                        "|" .. str(rec.EnabledCurrent)) or "-")
+    if key == M.modKey then return false end
+    local first = (M.modKey == nil)
+    M.modKey = key
+
+    if first then
+        local head = { (st.tab == "Installed") and T"Installed" or T"Browse" }
+        if st.count > 0 then head[#head + 1] = M.plural(st.count, "mod") end
+        if st.pages ~= nil and st.pages > 1 then head[#head + 1] = M.plural(st.pages, "page") end
+        pend(table.concat(head, ", "))
+        -- Before the list and not after it: without an account the browser is something to
+        -- read and not something to install from, and finding that out at the end of a
+        -- paragraph is finding it out too late.
+        if st.account ~= nil then pend(st.account) end
+    end
+    -- The mod ahead of the button strip. The strip is four phrases long and the same four
+    -- every time; the row is what the player came for, and putting it last means waiting
+    -- through the strip to hear it.
+    if rec ~= nil then pend(M.modLine(rec, st.index, st.count)) end
+    if first then
+        local prompts = M.modPrompts(widget.node)
+        if #prompts > 0 then pend(T"Actions: " .. table.concat(prompts, ", ")) end
+    end
+    flush()
+    return true
+end
+
 -- Keeping the input scheme ---------------------------------------------------------
 --
 -- The whole keyboard story rests on the game's control scheme being set to Controller, and
@@ -6400,6 +6656,17 @@ local function readerTick()
     -- front of the player with no key pressed. Checked before the focus is read, so the step
     -- leads the row it moved the cursor onto.
     soft(function() return M.levelUpTick(widget) end)
+
+    -- The mod manager is read from its model for the same reason the save list is: the focus
+    -- sits on a container, and the rows carry no text of their own worth hearing.
+    if M.MOD_SCREENS[str(widget.name)] then
+        local said = soft(function() return M.modTick(widget) end)
+        throttle(micros() - t0)
+        -- Whether it spoke or not, the ordinary reader has nothing to add here: what it would
+        -- find is the filter tree and four unlabelled numbers per row.
+        if said then flush() end
+        return
+    end
 
     -- A save screen is read from its model before anything else on it is considered. The
     -- focus here is a step behind the game - with a campaign expanded it stays on the header

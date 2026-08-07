@@ -274,6 +274,12 @@ M.MONTHS = {
 
 function M.months() return M.MONTHS[M.lang] end
 
+--- What separates a number from its fraction. A screen reader reads "11.2" in Russian as
+--- "eleven point two" in the middle of a Russian sentence; with the comma it reads as a number.
+M.DECIMAL = { ru = "," }
+
+function M.decimal() return M.DECIMAL[M.lang] or "." end
+
 --- The letter between the two numbers of a die. Russian writes 2к6 where English writes 2d6,
 --- and a screen reader saying "two dee six" to a Russian player is one of the few places the
 --- layer would be speaking a foreign language into the middle of its own sentence.

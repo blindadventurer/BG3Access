@@ -294,6 +294,22 @@ category instead.
   between moving the story on and running an errand. The list of quest targets leads with the
   main story for the same reason; it still says where the nearest one is when that is
   something else.
+- **The mod manager**, which is the screen the game's own mods are installed from. It used to
+  read as 210 loose strings: two tab names, then every mod flattened into four unlabelled runs —
+  a title, a number, a size, another number — and after them a hundred and twenty filter
+  categories, none of which said what they belonged to.
+
+  Every row now says what it is: **"ImpUI (ImprovedUI), not installed, 11.2 million downloads,
+  384 KB, rating 10202, version 2.1.0.82, 1 of 24"**. Page Up and Page Down walk the mods
+  themselves rather than the strings around them, and **Delete** gives the whole record.
+
+  Arriving on it says which tab you are on, how many mods and how many pages — and, before
+  anything else, **whether you are signed in**. Without an account the browser is something to
+  read and not something to install from, and that is the kind of thing worth knowing at the
+  start rather than after choosing a mod. Then the buttons: which one opens the details, which
+  one downloads, which one closes — read off the game's own bindings rather than guessed.
+
+  The filter panel is not read yet. It is the one part of this screen still to do.
 - **The context menu** — the one on **X**, where "Lockpick" lives along with everything else an
   object will allow. It reads the whole list the moment it opens ("Actions: Use,
   Lockpick, Move here") and then each row as you move onto it. Worth reaching for on anything that
