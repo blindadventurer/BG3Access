@@ -5774,8 +5774,107 @@ function M.modState(node)
     }
 end
 
---- The page as a list of mods, for the review cursor to walk.
+-- The card of one mod ---------------------------------------------------------------
+--
+-- Pressing A on a row opens a card, and the description a player actually chooses on is only
+-- there. It is not in the list's model - that carries a name, a size, two counters and an
+-- install state and nothing to read - and it is not fetched until the card is opened.
+--
+-- Measured 2026-08-07 on the card of "Extra encounters and Minibosses", by walking the widget
+-- for models and then for text, because the first walk found nine models and a description in
+-- none of them. The card renders its text instead, and every field of it hangs off a **named**
+-- node, which is as good as a model for our purposes and just as language-independent:
+--
+--     SelectedModName      Extra encounters and Minibosses
+--     authorLabel          Автор: rellamod
+--     versionValue         2.0.0.62          versionHint       Версия
+--     lastUpdatedValue     21/2/2026 18:48   originalUploadValue  13/11/2024 18:25
+--     tagsList             models with Name= …, ten of them
+--     modDescription       the whole description, 5037 bytes, in one string
+--
+-- So the description is the same problem as a book and gets the same answer: one property
+-- holding all of it, cut into paragraphs, walked with the review cursor. A card is minutes of
+-- speech and a listener has to be able to stop and go back.
+
+--- The description, cut where a listener can breathe.
+---
+--- The card writes real newlines where a book writes `<br>`, so it is turned into the book's
+--- shape and handed to the book's splitter - which already knows to cut a paragraph longer
+--- than a breath at a sentence end.
+function M.modParagraphs(text)
+    if type(text) ~= "string" or text == "" then return nil end
+    return bookParagraphs((text:gsub("[\r\n]+", "<br>")))
+end
+
+--- Everything on the open card.
+function M.modCard(node)
+    local function textOf(name, depth)
+        local n = M.namedNode(node, name, depth or 14)
+        if n == nil then return nil end
+        local t = A.collectText(n, 40, 6)[1]
+        if t == nil or not A.looksLikeText(t) or t == "[ForceUpdate]" then return nil end
+        return t
+    end
+
+    local out = {
+        name      = textOf("SelectedModName", 8),
+        author    = textOf("authorLabel"),
+        version   = textOf("versionValue"),
+        updated   = textOf("lastUpdatedValue"),
+        published = textOf("originalUploadValue"),
+        enabled   = textOf("enabledLabel"),
+    }
+
+    local tl = M.namedNode(node, "tagsList", 16)
+    if tl ~= nil then
+        local tags = {}
+        for _, r in ipairs(recordsOf(tl)) do
+            if r.Name ~= nil then tags[#tags + 1] = str(r.Name) end
+        end
+        if #tags > 0 then out.tags = tags end
+    end
+
+    local d = M.namedNode(node, "modDescription", 16)
+    if d ~= nil then
+        local text = nil
+        local p = props(d)
+        if type(p.Text) == "string" and p.Text ~= "" then text = p.Text end
+        if text == nil then
+            -- The string is on a `Run` inside it, and it is the long one.
+            for _, s in ipairs(A.collectText(d, 40, 6)) do
+                if type(s) == "string" and (text == nil or #s > #text) then text = s end
+            end
+        end
+        out.paras = M.modParagraphs(text)
+    end
+    if out.name == nil and out.paras == nil then return nil end
+    return out
+end
+
+--- The head of the card: what it is, who wrote it, and how long the description runs.
+function M.modCardHead(card)
+    local out = {}
+    if card.name ~= nil then out[#out + 1] = card.name end
+    if card.author ~= nil then out[#out + 1] = card.author end
+    if card.version ~= nil then out[#out + 1] = T"version " .. card.version end
+    if card.updated ~= nil then out[#out + 1] = T"updated " .. card.updated end
+    if card.published ~= nil then out[#out + 1] = T"published " .. card.published end
+    if card.tags ~= nil then out[#out + 1] = T"tags: " .. table.concat(card.tags, ", ") end
+    if card.paras ~= nil then out[#out + 1] = M.plural(#card.paras, "paragraph") end
+    return out
+end
+
+--- What the review cursor walks: the page of mods, or the open card.
 function M.modLines(node)
+    local scr = dataOf(node)
+    if type(scr) == "table" and scr.InDetailsView == true then
+        local card = soft(function() return M.modCard(node) end)
+        if card ~= nil then
+            local out = M.modCardHead(card)
+            for _, p in ipairs(card.paras or {}) do out[#out + 1] = p end
+            if #out > 0 then return out end
+        end
+    end
     local list = M.namedNode(node, "ModList", 10)
     if list == nil then return nil end
     local recs = recordsOf(list)
@@ -5788,6 +5887,16 @@ end
 function M.modDetails(node)
     local st = soft(function() return M.modState(node) end)
     if st == nil then return nil end
+    -- With a card open the question is about the mod and not about the page behind it, and
+    -- the description is already under the review cursor - so this is the head of the card,
+    -- which is the part a listener wants repeated rather than walked.
+    if st.details then
+        local card = soft(function() return M.modCard(node) end)
+        if card ~= nil then
+            local out = M.modCardHead(card)
+            if #out > 0 then return out end
+        end
+    end
     local out = {}
     out[#out + 1] = (st.tab == "Installed") and T"Installed" or T"Browse"
     if st.count > 0 then out[#out + 1] = M.plural(st.count, "mod") end
@@ -5809,12 +5918,40 @@ function M.modTick(widget)
     -- Nothing to say while the page is being fetched, and the list underneath is the old one.
     if st.updating then return false end
 
+    -- Opening a card does not change the widget, so the review cursor would still be holding
+    -- the page of mods while the player is standing in front of a description. Rebuilt on every
+    -- change of what is up, which is the only moment it can be wrong.
+    local function retakeLines()
+        M.lines, M.cursor, M.linesFrom =
+            M.linesOf({ name = widget.name, node = widget.node, texts = {} }), 0, "screen"
+    end
+
+    -- The card, while one is open. What is behind it has not changed and is not what the
+    -- player is looking at.
+    if st.details then
+        local card = soft(function() return M.modCard(widget.node) end)
+        local key = "card|" .. tostring(card ~= nil and card.name or "-")
+        if key == M.modKey then return false end
+        M.modKey = key
+        retakeLines()
+        if card == nil then return false end
+        for _, s in ipairs(M.modCardHead(card)) do pend(s) end
+        -- The first paragraph with the head, the rest under the cursor - a card runs to
+        -- minutes of speech and reading it in one breath is the same mistake a book would be.
+        if card.paras ~= nil and card.paras[1] ~= nil then pend(card.paras[1]) end
+        pend(T"Review with PageUp and PageDown")
+        flush()
+        return true
+    end
+
     local rec = st.rec
     local key = tostring(st.tab) .. "|" .. tostring(st.index) .. "|" .. tostring(st.count) ..
                 "|" .. (rec ~= nil and (str(rec.Name) .. "|" .. str(rec.InstallState) ..
                                         "|" .. str(rec.EnabledCurrent)) or "-")
     if key == M.modKey then return false end
     local first = (M.modKey == nil)
+    -- Coming back out of a card, the cursor has to be handed the list again.
+    if M.modKey ~= nil and M.modKey:sub(1, 5) == "card|" then retakeLines() end
     M.modKey = key
 
     if first then
