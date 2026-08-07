@@ -2236,23 +2236,16 @@ local function describe(it)
 end
 M.describe = describe
 
---- Say what is around, nearest first - within the current category.
-function M.around(limit)
-    if M.scan() == nil then return end
-    local list = M.view
-    local cat = M.CATEGORIES[M.category]
-    if #list == 0 then
-        say(cat.key == "all" and T"Nothing nearby" or (cat.name .. T", empty"))
-        return list
-    end
-    local n = math.min(#list, limit or 8)
-    local parts = {}
-    for i = 1, n do parts[#parts + 1] = describe(list[i]) end
-    local head = #list .. ". "
-    if cat.key ~= "all" then head = cat.name .. ", " .. head end
-    say(head .. table.concat(parts, ". "))
-    return list
-end
+-- `M.around(limit)` used to live here: eight entries of the current category spoken in one
+-- breath, with the count in front. It was unbound from every key when the list-walking model
+-- replaced it - see the note on M.KEYS in a11y-pad.lua, "what is deliberately absent" - and then
+-- sat here for a week with no caller, which is worse than it sounds. Dead code implementing a
+-- design that was rejected on purpose is an invitation to bind it to a key again, and the reason
+-- it was rejected is not visible from the function. Removed 2026-08-08.
+--
+-- What replaced it, and the shape to keep: `categorySay` says the category and how many are in
+-- it - one short line, no contents - and `step` walks the list one entry at a time. The player
+-- decides how much of it they want to hear, and can stop after the first.
 
 -- Keeping the list honest.
 --
