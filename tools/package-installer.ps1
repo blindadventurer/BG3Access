@@ -64,8 +64,9 @@ $sed      = Join-Path $stage "BG3Access.sed"
 # written here renders as mojibake on any Windows whose codepage is not 1251 - which includes
 # the machine of the first person abroad who tries this.
 $prompt = "Install BG3Access, screen reader support for Baldur's Gate 3? " +
-          "It adds files to the game folder and, if the Script Extender is missing, downloads " +
-          "it from the extender's own project. Nothing is replaced and uninstall.bat undoes it."
+          "It installs as an ordinary mod and, if the Script Extender is missing, downloads it " +
+          "from the extender's own project and puts it in the game folder. Close the game first. " +
+          "Nothing is replaced and uninstall.bat undoes it."
 
 # Three things about the command below, each of which cost a build to find out, and all three
 # fail the same way: the package extracts itself, runs nothing, deletes its temp folder and

@@ -80,9 +80,9 @@ is asked.
 ### All three do the same thing
 
 The installer finds the game by itself, offers to fetch the Script Extender if it is not
-already there, copies the layer in, sets up the piece that turns the game's speech into your
-screen reader's speech, and puts a shortcut on your Desktop that starts the game **without the
-launcher** — Larian's launcher window has no accessibility information in it at all, and this
+already there, installs the layer as a mod and switches it on, sets up the piece that turns the
+game's speech into your screen reader's speech, and puts a shortcut on your Desktop that starts
+the game **without the launcher** — Larian's launcher window has no accessibility information in it at all, and this
 is the simplest way past it. Steam still has to be running for that shortcut to work.
 
 **Start the game however you like — Steam, the shortcut, anything.** The half of the mod that
@@ -100,16 +100,26 @@ lines to read.
 The only difference is who asks about the Script Extender: the ZIP and the one-liner ask in the
 window, `BG3Access-Setup.exe` asks in its opening dialog and then does not stop again.
 
-Nothing depends on where the unpacked folder is. The layer is copied into the game folder, and
-the speech companion into `%LOCALAPPDATA%\BG3Access`, so moving or deleting the unpacked folder
-cannot break either. Keep it anyway: `status.bat` and `uninstall.bat` live there — the exe and
-the one-liner put them in `%LOCALAPPDATA%\Programs\BG3Access` — and there is no other copy.
+**Close Baldur's Gate 3 before installing.** While it runs it holds every mod file open, so an
+install cannot replace one. The installer says so plainly if you forget, and nothing is harmed —
+close the game and run it again.
+
+Nothing depends on where the unpacked folder is. The layer is installed as an ordinary mod,
+into `%LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Mods\`, and the speech companion into
+`%LOCALAPPDATA%\BG3Access`, so moving or deleting the unpacked folder cannot break either. Keep
+it anyway: `status.bat` and `uninstall.bat` live there — the exe and the one-liner put them in
+`%LOCALAPPDATA%\Programs\BG3Access` — and there is no other copy.
+
+Nothing of the layer goes into the game's own folder, so it survives a game update and a Steam
+file verification, and uninstalling really does remove all of it.
 
 Two things that can go wrong once and look permanent:
 
-- **The game folder is read-only.** If the game sits under `Program Files`, the Script Extender
-  cannot be written there by an ordinary program. Right-click `install.bat` and choose **Run as
-  administrator**.
+- **The game folder is read-only.** If the game sits under `Program Files`, an ordinary program
+  cannot write there. This no longer stops the install — the layer does not go there — but the
+  **Script Extender** does, and without it no mod runs at all. If the installer reports it,
+  right-click `install.bat` and choose **Run as administrator**, just that once. If you already
+  have the Script Extender from any other mod, this never comes up.
 - **An antivirus removes `DWrite.dll`.** The Script Extender is a DLL that loads itself into the
   game, which is also what some unpleasant things do, and scanners occasionally take it on that
   resemblance alone. Allow it and run `install.bat` again. The installer prints the SHA-256 of
