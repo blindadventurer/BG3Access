@@ -64,6 +64,8 @@ local PLURALS = {
     ["час"]      = { "час", "часа", "часов" },
     ["минута"]   = { "минута", "минуты", "минут" },
     ["ход"]      = { "ход", "хода", "ходов" },
+    ["предмет"]  = { "предмет", "предмета", "предметов" },
+    ["заклинание"] = { "заклинание", "заклинания", "заклинаний" },
 }
 
 function M.plural(n, word)
@@ -1405,6 +1407,12 @@ function M.detailsLines()
         local lines = soft(function() return M.levelUpDetails(a.node) end)
         if lines ~= nil and #lines > 0 then return lines end
     end
+    -- The same on the character panel, where the thing under the cursor is an item and the
+    -- panel around it is a paperdoll: the row is the answer, not the screen.
+    if M.CHARACTER_PANELS ~= nil and M.CHARACTER_PANELS[str(a.name)] then
+        local lines = soft(function() return M.recordDetails(a.node) end)
+        if lines ~= nil and #lines > 0 then return lines end
+    end
 
     local marks = landmarks(a.node)
     local out = {}
@@ -1439,6 +1447,13 @@ function M.summaryLines()
         local lines = soft(function() return M.saveSummary(a.node, str(a.name)) end)
         if lines ~= nil and #lines > 0 then return lines end
     end
+    -- The character panel has no `summaryPanel`: it *is* the summary, and the question this
+    -- key asks there is "what am I carrying and what is on me".
+    if M.CHARACTER_PANELS ~= nil and M.CHARACTER_PANELS[str(a.name)] then
+        local lines = soft(function() return M.characterSummary(a.node) end)
+        if lines ~= nil and #lines > 0 then return lines end
+    end
+
     local marks = landmarks(a.node)
     if marks.summary == nil then return nil end
     local t = visibleScan(marks.summary, 900, 80).texts
@@ -2291,6 +2306,12 @@ function M.linesOf(a)
     -- gives the headings and the character sheet and not one of the choices.
     if a.node ~= nil and M.LEVELUP_SCREENS ~= nil and M.LEVELUP_SCREENS[str(a.name)] then
         local lines = soft(function() return M.levelUpLines(a.node) end)
+        if lines ~= nil and #lines > 0 then return lines end
+    end
+    -- And the character panel, for the same reason again: its grid of items is 1422 records
+    -- and not one string, so the ordinary capture gives the sheet's labels and no inventory.
+    if a.node ~= nil and M.CHARACTER_PANELS ~= nil and M.CHARACTER_PANELS[str(a.name)] then
+        local lines = soft(function() return M.panelLines(a.node) end)
         if lines ~= nil and #lines > 0 then return lines end
     end
     return a.texts or {}
@@ -3356,7 +3377,11 @@ local function rowAt(widgetNode, focused)
                 if tostring(ch[j]) == tostring(kid) then idx = j break end
             end
         end
-        if cls:find("ItemsControl", 1, true) then
+        -- A ListBox is an ItemsControl by behaviour and not by name: the inventory grid is
+        -- one ("ListBox PlayerInventory") and a class test for "ItemsControl" alone missed
+        -- every cell in it. `ListBoxItem` has to be excluded or a row matches its own list.
+        if cls:find("ItemsControl", 1, true)
+           or (cls:find("ListBox", 1, true) and not cls:find("Item", 1, true)) then
             local recs = {}
             for j = 1, cn do
                 local kp = props(ch[j])
@@ -3441,6 +3466,21 @@ local function recordLine(rec, short)
 
     if rec.Spell ~= nil or (rec.Selected ~= nil and rec.NotAvailable ~= nil) then
         local line = spellRefLine(rec, short)
+        if line ~= nil then return line end
+    end
+
+    -- An inventory cell: a slot number and a game object. Through M, because the item reader
+    -- belongs to the character panel and is written further down the file.
+    if rec.Index ~= nil and type(rec.Object) == "userdata" then
+        local obj = soft(function() return rec.Object:GetAllProperties() end)
+        local line = (type(obj) == "table") and M.itemLine(obj, short) or nil
+        if line ~= nil then return line end
+    end
+
+    -- An equipment slot of the paperdoll, full or empty. Both matter: a player who cannot see
+    -- it has no other way to learn they are walking around with no boots on.
+    if rec.SlotType ~= nil and rec.EquippedType ~= nil then
+        local line = M.slotLine(rec, short)
         if line ~= nil then return line end
     end
 
@@ -3813,6 +3853,475 @@ function M.levelUpTodo(widgetNode)
     if rec.CanSelectFeat == true then out[#out + 1] = "Можно выбрать черту" end
     if rec.IsLevelUpComplete == true then out[#out + 1] = "Все выборы сделаны"
     elseif rec.IsLevelUpComplete == false then out[#out + 1] = "Выбор ещё не завершён" end
+
+    if #out == 0 then return nil end
+    return out
+end
+
+-- The character panel: what you carry, what you wear, what is on you ------------------
+--
+-- `CharacterPanel_c` is what the quick menu opens, and it is three screens at once: a shared
+-- inventory, a paperdoll of what is worn, and a character sheet on five tabs (Инвентарь,
+-- Характеристики, Ответные действия, Умения, Показатели).
+--
+-- Nothing in the grid is text. Measured with the panel open: **1422 records of the shape
+-- `{Index, Object}`** and not one string among them - a cell is a slot number and a game
+-- object, and every word about the item is on that object:
+--
+--     Name / Description   loca handles       Count            Rarity     ItemType
+--     Equipped             NotEquipped        IsEquipment      IsNew      IsStolen
+--     IsStoryItem  IsWare  Gold  TradePrice   CampSupplies     IsContainer NewItemsInside
+--     Stats.Weight.Value   Stats.ArmorClass.Value (-1 when it does not apply)
+--     Stats.Range.Value    IsMartial  IsRanged  IsVersatile    EntityUUID
+--
+-- The cell control is an `ls.LSEntityObject` named `CellRoot`, it is focusable, its own text
+-- is empty and `dataOf` finds nothing on it - the context is inherited, exactly as on the
+-- level-up screen, so `dataBehind` is what reaches it and `rowAt` gives the position.
+--
+-- A party member's bag is an `Expander` whose header is an `ls.LSToggleButton` named
+-- `ExpanderButton`, which is the same shape the save-game list uses - and that is why the
+-- layer announced «Гейл, группа сохранений, развёрнуто, 1 из 3» over an inventory.
+--
+-- The characters are named `ResStr_1732220843`, a runtime string reference and not a loca
+-- handle, so `Ext.Loca` cannot translate it; the header's `Title` node carries the readable
+-- name, which is what `titleUnder` already finds.
+--
+-- Statuses are the one thing the interface will not give up: `StatusEffects` on the record is
+-- a collection `GetAllProperties` refuses to open. The client ECS hands them over plainly -
+-- `Ext.Entity.Get(uuid).StatusContainer.Statuses` is a map of handle to status name, and the
+-- name is a stats id whose `DisplayName` is the word to say.
+
+M.CHARACTER_PANELS = {
+    CharacterPanel_c = true, CharacterPanel = true,
+}
+
+-- Screens whose rows are models rather than text. The record reader runs on these and
+-- nowhere else - it is cheap but not free, and on a screen whose focus reads fine it would
+-- only be a chance to say something worse.
+M.RECORD_SCREENS = {
+    CharacterLevelUp_c = true, CharacterLevelUp = true,
+    CharacterRespec_c = true, CharacterFullRespec_c = true,
+    CharacterPanel_c = true, CharacterPanel = true,
+}
+
+local RARITY_RU = {
+    Uncommon = "необычный", Rare = "редкий", VeryRare = "очень редкий",
+    Legendary = "легендарный", Divine = "божественный", Unique = "уникальный",
+}
+
+-- What kind of thing an item is, and where that answer comes from.
+--
+-- Not from `ItemType` alone, which is what the first build did and which is wrong in a way a
+-- listener cannot correct for: a shovel carries `ItemType = Scroll`, and «Лопата, свиток» is
+-- worse than «Лопата». What is reliable is `EquipmentSlotType` - the slot an item goes in -
+-- for anything wearable, and a short list of `ItemType` values for the rest. Where neither is
+-- certain, nothing is said; the name is doing the work anyway.
+--
+-- Measured over 41 distinct items in a real party's bags.
+local SLOTKIND_RU = {
+    MeleeMainHand = "оружие", MeleeOffHand = "оружие",
+    RangedMainHand = "дальнобойное оружие", RangedOffHand = "дальнобойное оружие",
+    Helmet = "шлем", Breast = "нагрудник", Cloak = "плащ", Gloves = "перчатки",
+    Boots = "сапоги", Amulet = "амулет", Ring = "кольцо", Ring2 = "кольцо",
+    Underwear = "бельё", MusicalInstrument = "инструмент",
+    VanityBody = "облик", VanityBoots = "облик",
+}
+
+local ITEMKIND_RU = {
+    Container = "контейнер", Tool = "инструмент", Book = "книга", Shield = "щит",
+    Consumable = "расходник",
+}
+
+-- The slots of the paperdoll, as the model names them. `SlotType` is the same word in the
+-- character's `Equipment` map and on the control the cursor lands on, so one table serves
+-- both the "what am I wearing" list and the row under the cursor.
+local SLOT_RU = {
+    Helmet = "шлем", Breast = "нагрудник", Cloak = "плащ", Gloves = "перчатки",
+    Boots = "сапоги", Amulet = "амулет", Ring = "кольцо", Ring2 = "второе кольцо",
+    Underwear = "бельё", MeleeMainHand = "ближний бой, основная рука",
+    MeleeOffHand = "ближний бой, вторая рука",
+    RangedMainHand = "дальний бой, основная рука",
+    RangedOffHand = "дальний бой, вторая рука",
+    LightSource = "источник света", MusicalInstrument = "инструмент",
+    VanityBody = "облик, одежда", VanityBoots = "облик, обувь",
+}
+
+--- A number said the way a listener takes it: one decimal, and a comma for the point.
+local function num1(v)
+    local n = tonumber(str(v))
+    if n == nil then return nil end
+    if math.abs(n - math.floor(n + 0.5)) < 0.05 then return tostring(math.floor(n + 0.5)) end
+    return (string.format("%.1f", n):gsub("%.", ","))
+end
+
+--- What one item is. `obj` is the properties table of an `Object`, not the userdata.
+---
+--- Short is what the cursor says while it moves - a name and the handful of facts that change
+--- a decision at a glance. The rest (what it is for, what it weighs, what it is worth, what
+--- it does in a fight) is the "tell me more" key, because a player walking forty slots wants
+--- forty short lines and not forty paragraphs.
+local function itemLine(obj, short, noKind)
+    if type(obj) ~= "table" then return nil end
+    local name = loca(str(obj.Name))
+    if type(name) ~= "string" or name == "" or name:find("^h%x") or name:find("^ls::") then
+        name = nil
+    end
+    if name == nil then return nil end
+
+    local parts = { name }
+    local count = tonumber(str(obj.Count))
+    if count ~= nil and count > 1 then parts[#parts + 1] = "×" .. math.floor(count) end
+    if str(obj.Equipped) ~= "NotEquipped" and str(obj.Equipped) ~= "nil" then
+        parts[#parts + 1] = "надето"
+    end
+    if obj.IsNew == true then parts[#parts + 1] = "новое" end
+    if obj.IsStolen == true then parts[#parts + 1] = "краденое" end
+    local rare = RARITY_RU[str(obj.Rarity)]
+    if rare ~= nil then parts[#parts + 1] = rare end
+    if obj.IsStoryItem == true then parts[#parts + 1] = "сюжетный предмет" end
+    -- A shield is a shield before it is a thing worn in the off hand, so ItemType wins where
+    -- it is one of the certain ones; otherwise the slot says it, and where neither does,
+    -- nothing is said.
+    local kind = ITEMKIND_RU[str(obj.ItemType)] or SLOTKIND_RU[str(obj.EquipmentSlotType)]
+    if str(obj.ItemType) == "Consumable" and str(obj.UseType) == "Potion" then
+        kind = "зелье"
+    end
+    if kind ~= nil and not noKind then parts[#parts + 1] = kind end
+    -- A bag with something unread in it is worth opening, and nothing else says so.
+    if obj.NewItemsInside == true then parts[#parts + 1] = "внутри новое" end
+    local supplies = tonumber(str(obj.CampSupplies))
+    if supplies ~= nil and supplies > 0 then
+        parts[#parts + 1] = "припасы " .. math.floor(supplies)
+    end
+    if short then return table.concat(parts, ", ") end
+
+    -- The numbers, and only the ones that apply: the model uses -1 for "not this kind of
+    -- thing", so an armour class of -1 on a keyring must not be read out as a number.
+    local ac = tonumber(str(obj["Stats.ArmorClass.Value"]))
+    if ac == nil and type(obj.Stats) == "userdata" then
+        local st = soft(function() return obj.Stats:GetAllProperties() end)
+        if type(st) == "table" then
+            if type(st.ArmorClass) == "userdata" then
+                local a = soft(function() return st.ArmorClass:GetAllProperties() end)
+                ac = a and tonumber(str(a.Value)) or nil
+            end
+            if type(st.Weight) == "userdata" then
+                local w = soft(function() return st.Weight:GetAllProperties() end)
+                local wv = w and num1(w.Value) or nil
+                if wv ~= nil and wv ~= "0" then parts[#parts + 1] = "вес " .. wv end
+            end
+            if type(st.Range) == "userdata" then
+                local r = soft(function() return st.Range:GetAllProperties() end)
+                local rv = r and tonumber(str(r.Value)) or nil
+                if rv ~= nil and rv > 0 then
+                    parts[#parts + 1] = "дальность " .. math.floor(rv + 0.5) .. " м"
+                end
+            end
+        end
+    end
+    if ac ~= nil and ac > 0 then parts[#parts + 1] = "класс брони " .. math.floor(ac + 0.5) end
+    if obj.IsMartial == true then parts[#parts + 1] = "воинское" end
+    if obj.IsVersatile == true then parts[#parts + 1] = "универсальное" end
+    local gold = tonumber(str(obj.Gold))
+    if gold ~= nil and gold > 0 then parts[#parts + 1] = "цена " .. math.floor(gold) end
+
+    local why = unmarkup(loca(str(obj.Description)))
+    if type(why) == "string" and why ~= "" and not why:find("^h%x") and not why:find("^ls::") then
+        return table.concat(parts, ", ") .. ". " .. why
+    end
+    return table.concat(parts, ", ")
+end
+M.itemLine = itemLine
+
+--- The properties of an item held on a record, whichever field it arrived in.
+local function itemProps(rec, field)
+    local v = rec[field]
+    if type(v) ~= "userdata" then return nil end
+    local p = soft(function() return v:GetAllProperties() end)
+    if type(p) == "table" then return p end
+    return nil
+end
+
+--- One equipment slot: which slot it is, and what is in it.
+---
+--- The empty ones matter as much as the full: a player who cannot see the paperdoll has no
+--- other way to learn that they have been walking around with no boots on.
+local function slotLine(rec, short, key)
+    -- `key` is the name the caller already knows this slot by, and it wins. `SlotType` is an
+    -- enum and does not always survive being turned into a string: the light-source slot came
+    -- back as the word "Max", which is what an out-of-range enum stringifies to, and the
+    -- paperdoll announced «Max, пусто».
+    local slot = SLOT_RU[str(key)] or SLOT_RU[str(rec.SlotType)] or loca(str(rec.SlotType))
+    if type(slot) ~= "string" or slot == "" or slot == "nil" or slot == "Max" then slot = nil end
+    -- The slot has already said what kind of thing goes in it, so the item does not repeat
+    -- it: «нагрудник, Простая мантия, надето» and not «…, надето, нагрудник».
+    local item = itemProps(rec, "Item")
+    local what = item and itemLine(item, short, slot ~= nil) or nil
+    if what == nil then
+        if slot == nil then return nil end
+        return slot .. ", пусто"
+    end
+    if slot == nil then return what end
+    return slot .. ", " .. what
+end
+M.slotLine = slotLine
+
+--- The states on a character, out of the entity rather than out of the interface.
+---
+--- `StatusEffects` on the view model is a collection `GetAllProperties` will not open, so the
+--- panel is a dead end for this and the ECS is not: `StatusContainer.Statuses` maps an entity
+--- handle to a status name, and the name is a stats id whose `DisplayName` is the word.
+---
+--- The engine's own bookkeeping is filtered out. A save carries things like
+--- `PLAYER_BONUSES_EASYMODE`, which is the difficulty setting wearing a status's clothes, and
+--- reading it out as a condition would be worse than saying nothing.
+function M.statusLines(uuid)
+    local ent = nil
+    if type(uuid) == "string" and uuid ~= "" and uuid ~= "nil" then
+        ent = soft(Ext.Entity.Get, uuid)
+    end
+    if ent == nil then ent = soft(function() return Ext.Entity.GetLocalPlayer() end) end
+    if ent == nil then return nil end
+    local container = soft(function() return ent.StatusContainer end)
+    if container == nil then return nil end
+    local list = soft(function() return container.Statuses end)
+    if list == nil then return nil end
+
+    local out, seen = {}, {}
+    for _, name in pairs(list) do
+        local id = str(name)
+        if id ~= "" and id ~= "nil" and not seen[id] and #out < 24 then
+            seen[id] = true
+            local e = soft(Ext.Stats.Get, id)
+            local said = e and loca(str(soft(function() return e.DisplayName end)):match("^([^;]+)") or "") or nil
+            if type(said) ~= "string" or said == "" or said:find("^h%x") or said:find("^ls::") then
+                said = nil
+            end
+            -- Only what the game would show a sighted player. An id with no display name of
+            -- its own is engine bookkeeping - the difficulty bonus, a script flag - and is
+            -- not a condition anybody is in.
+            if said ~= nil then out[#out + 1] = said end
+        end
+    end
+    if #out == 0 then return nil end
+    return out
+end
+
+--- Everything the panel knows about the character it is showing.
+local function selectedCharacter(widgetNode)
+    local vm = dataOf(widgetNode)
+    if type(vm) ~= "table" or type(vm.CurrentPlayer) ~= "userdata" then return nil end
+    local cp = soft(function() return vm.CurrentPlayer:GetAllProperties() end)
+    if type(cp) ~= "table" or type(cp.SelectedCharacter) ~= "userdata" then return nil end
+    local sc = soft(function() return cp.SelectedCharacter:GetAllProperties() end)
+    if type(sc) ~= "table" then return nil end
+    return sc, cp
+end
+
+--- What is worn, slot by slot, empty ones included.
+function M.equipLines(widgetNode)
+    local sc = selectedCharacter(widgetNode)
+    if sc == nil or type(sc.Equipment) ~= "userdata" then return nil end
+    local eq = soft(function() return sc.Equipment:GetAllProperties() end)
+    if type(eq) ~= "table" then return nil end
+
+    -- In the order a person dresses rather than the order the table iterates, which is
+    -- arbitrary and would put the boots between the two rings.
+    local ORDER = { "MeleeMainHand", "MeleeOffHand", "RangedMainHand", "RangedOffHand",
+                    "Helmet", "Breast", "Cloak", "Gloves", "Boots",
+                    "Amulet", "Ring", "Ring2", "LightSource", "MusicalInstrument" }
+    local out = {}
+    for _, key in ipairs(ORDER) do
+        if type(eq[key]) == "userdata" then
+            local slot = soft(function() return eq[key]:GetAllProperties() end)
+            if type(slot) == "table" then
+                local line = slotLine(slot, true, key)
+                if line ~= nil then out[#out + 1] = line end
+            end
+        end
+    end
+    if #out == 0 then return nil end
+    return out
+end
+
+--- The character the panel is showing, in one line: who, how hurt, how loaded.
+function M.characterLine(rec)
+    if type(rec) ~= "table" then return nil end
+    local parts = {}
+    -- Never `Name`: on this panel it is `ResStr_1732220843`, a runtime string reference that
+    -- `Ext.Loca` cannot translate. The header's own Title node carries the readable name and
+    -- the caller supplies it.
+    local st = itemProps(rec, "Stats")
+    if st ~= nil then
+        local hp = itemProps(st, "Health")
+        if hp ~= nil then
+            local v, m = tonumber(str(hp.Value)), tonumber(str(hp.Max))
+            if v ~= nil and m ~= nil and m > 0 then
+                parts[#parts + 1] = "здоровье " .. math.floor(v) .. " из " .. math.floor(m)
+            end
+        end
+        local ac = itemProps(st, "ArmorClass")
+        local av = ac and tonumber(str(ac.Value)) or nil
+        if av ~= nil and av > 0 then parts[#parts + 1] = "класс брони " .. math.floor(av) end
+    end
+    local enc = itemProps(rec, "EncumbranceStats")
+    if enc ~= nil then
+        local w, max = num1(enc.CurrentWeight), num1(enc.WeightMaximum)
+        if w ~= nil and max ~= nil then parts[#parts + 1] = "вес " .. w .. " из " .. max end
+        if enc.IsOverEncumbared == true then parts[#parts + 1] = "перегружен" end
+    end
+    local inv = itemProps(rec, "Inventory")
+    local gold = inv and tonumber(str(inv.Gold)) or nil
+    if gold ~= nil and gold > 0 then parts[#parts + 1] = "золото " .. math.floor(gold) end
+    if #parts == 0 then return nil end
+    return table.concat(parts, ", ")
+end
+
+--- The thing under the cursor at length: what it is for, what it weighs, what it is worth.
+---
+--- The spoken line is one utterance and has to stay one - a player walking forty slots wants
+--- forty short lines, not forty paragraphs - so everything that does not change a decision at
+--- a glance lives here, on the key that asks for it.
+function M.recordDetails(node)
+    local focused = widgetFocus(node)
+    if focused == nil then return nil end
+    local rec = select(1, rowAt(node, focused)) or dataBehind(focused)
+    if type(rec) ~= "table" then return nil end
+
+    local out = {}
+    local item = itemProps(rec, "Object") or itemProps(rec, "Item")
+    if item ~= nil then
+        local long = itemLine(item, false)
+        if long ~= nil then
+            -- The facts and the prose as two lines, because the review cursor is walked a
+            -- line at a time and a paragraph welded to a list of numbers cannot be re-heard
+            -- without hearing the numbers again.
+            local facts, why = long:match("^(.-)%. (.*)$")
+            if facts ~= nil then
+                out[#out + 1] = facts
+                out[#out + 1] = why
+            else
+                out[#out + 1] = long
+            end
+        end
+    end
+    if #out == 0 then
+        local line = recordLine(rec, false)
+        if line ~= nil then out[#out + 1] = line end
+    end
+    -- The cursor is on a party member's header rather than on an item. Their record has no
+    -- readable name of its own - it is a `ResStr_` reference - so there is nothing for
+    -- `recordLine` to build on, and the question "tell me more about this" means the
+    -- character: what is on them, and what they are wearing.
+    if #out == 0 and rec.CharacterType ~= nil then
+        local who = M.characterSummary(node)
+        if who ~= nil then return who end
+    end
+    if #out == 0 then return nil end
+    return out
+end
+
+--- Who the panel is showing, what is on them, and what they are wearing.
+function M.characterSummary(node)
+    local sc = selectedCharacter(node)
+    if sc == nil then return nil end
+    local out = {}
+    local who = M.characterLine(sc)
+    if who ~= nil then out[#out + 1] = who end
+    local st = M.statusLines(str(sc.EntityUUID))
+    if st ~= nil then out[#out + 1] = "Состояния: " .. table.concat(st, ", ")
+    else out[#out + 1] = "Состояний нет" end
+    local eq = M.equipLines(node)
+    if eq ~= nil then for i = 1, #eq do out[#out + 1] = eq[i] end end
+    if #out == 0 then return nil end
+    return out
+end
+
+--- The panel as lines to walk with the review cursor.
+---
+--- Same reason as the level-up screen: what is on it is not what is written on it. The
+--- ordinary capture is the character sheet's labels and numbers as separate strings and not
+--- one item name, because the items are a grid of icons bound to models.
+function M.panelLines(node)
+    local out, seen = {}, {}
+    -- The key is separate from the line because two party members carry the same things and
+    -- the rows are numbered: deduplicating on the text alone deleted «1. Брелок» from the
+    -- second bag because the first had one, and that bag then began at «5.».
+    local function add(s, key)
+        if type(s) ~= "string" or s == "" then return end
+        key = key or s
+        if seen[key] then return end
+        seen[key] = true
+        out[#out + 1] = s
+    end
+
+    local marks = landmarks(node, 2000)
+    local strip = marks.tabs or marks.strip
+    if strip ~= nil then
+        local items, sel = tabItems(strip)
+        if sel ~= nil and #items > 1 then
+            add(items[sel].text .. ", " .. sel .. " из " .. #items)
+        end
+    end
+
+    local sc = selectedCharacter(node)
+    if sc ~= nil then
+        local who = M.characterLine(sc)
+        if who ~= nil then add(who) end
+        local st = M.statusLines(str(sc.EntityUUID))
+        if st ~= nil then add("Состояния: " .. table.concat(st, ", ")) end
+    end
+
+    local eq = M.equipLines(node)
+    if eq ~= nil then
+        add("Снаряжение: " .. #eq)
+        for i = 1, #eq do add(eq[i]) end
+    end
+
+    -- Then the bags, in the order the panel draws them, each led by whose it is. The owner is
+    -- read off the `Expander` and carried down - not off its `ExpanderButton`, because that
+    -- one is a sibling of the list and setting a local there is lost by the time the walk
+    -- reaches it, which is how every bag came out called «Сумка».
+    local left = { n = 20000 }
+    local function rec(o, d, owner)
+        if o == nil or d > 26 or left.n <= 0 then return end
+        left.n = left.n - 1
+        local p = props(o)
+        if p.IsVisible == false then return end
+        local cls = select(1, A.splitToString(A.realType(o)))
+        if A.NO_TEXT[cls] then return end
+        if cls:find("Expander", 1, true) then
+            local name = titleUnder(o)
+            if name ~= nil then owner = name end
+        end
+        if cls:find("ListBox", 1, true) and not cls:find("Item", 1, true) then
+            local ch, cn = A.kids(o)
+            local rows = {}
+            for i = 1, cn do
+                local kp = props(ch[i])
+                if kp.ActualWidth == nil and kp.IsVisible == nil then
+                    local item = itemProps(kp, "Object")
+                    local line = item and itemLine(item, true) or nil
+                    if line ~= nil then rows[#rows + 1] = #rows + 1 .. ". " .. line end
+                end
+            end
+            if #rows > 0 then
+                local who = owner or "Сумка"
+                add(who .. ": " .. M.plural(#rows, "предмет"), who .. "|head")
+                for i = 1, #rows do add(rows[i], who .. "|" .. i) end
+            end
+            return
+        end
+        local ch, cn = A.kids(o)
+        for i = 1, cn do rec(ch[i], d + 1, owner) end
+    end
+    rec(node, 0, nil)
+
+    -- And the screen's own words last: the sheet's labels and numbers are worth having, they
+    -- are simply not what the panel is for. A cap of its own, because the panel is far bigger
+    -- than the default budget and the ability scores sit past it.
+    local info = visibleScan(node, 6000, 120)
+    for i = 1, #info.texts do add(info.texts[i]) end
 
     if #out == 0 then return nil end
     return out
@@ -4957,6 +5466,19 @@ local function expanderText(o, p)
             local name = titleUnder(q) or "Прохождение"
             local state = (qp.IsExpanded == true) and "развёрнуто" or "свёрнуто"
 
+            -- The same control, a different thing entirely. A party member's bag on the
+            -- character panel is an Expander with an ExpanderButton header, exactly like a
+            -- save-game playthrough - which is how an inventory came to announce itself as
+            -- «Гейл, группа сохранений, развёрнуто, 1 из 3». Here the second half of the line
+            -- is not what kind of control this is but what the bag holds and what it weighs.
+            if M.CHARACTER_PANELS[str(M.lastScreen)] then
+                local parts = { name, "инвентарь", state }
+                local rec = dataBehind(o)
+                local who = (type(rec) == "table") and M.characterLine(rec) or nil
+                if who ~= nil then parts[#parts + 1] = who end
+                return table.concat(parts, ", ")
+            end
+
             -- The journal is built from the same control, and a quest announced as "группа
             -- сохранений" is worse than no wording at all. Here the useful second half is
             -- not what kind of thing this is but what it is asking for.
@@ -5745,10 +6267,11 @@ local function readerTick()
             pendingCaption = caption
         end
     end
-    -- A row of the level-up screen carries no text at all - it is an icon, a highlight and a
-    -- focus frame - so everything sayable about it is on the record the template is bound to.
-    -- Ahead of focusText, which would otherwise announce the control's own x:Name.
-    if text == nil and M.LEVELUP_SCREENS[str(widget.name)] then
+    -- A row of a level-up screen or of the character panel carries no text at all - it is an
+    -- icon, a highlight and a focus frame - so everything sayable about it is on the record
+    -- the template is bound to. Ahead of focusText, which would otherwise announce the
+    -- control's own x:Name ("spellButton", "CellRoot").
+    if text == nil and M.RECORD_SCREENS[str(widget.name)] then
         local line, key = M.levelUpFocus(widget.node, focused)
         if line ~= nil then
             text = line

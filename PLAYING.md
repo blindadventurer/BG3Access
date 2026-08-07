@@ -304,6 +304,30 @@ category instead.
   much of it is left ("Заклинания, выбрано 0 из 2"), and when the last choice is made the layer
   says so — that is the moment the button at the bottom starts working, and nothing else tells
   you. **End** answers the same question at any time: what is still undecided, then the sheet.
+- **The character panel** — the one the quick menu opens, and the same problem as levelling up
+  for the same reason. Its grid is **1422 records and not one string**: an inventory cell is a
+  slot number and a game object, and every word about the item is on the object rather than on
+  the screen. So the cursor moved across a bag and said nothing.
+
+  Now a cell says its name, how many there are, whether it is worn, new or stolen, how rare it
+  is and what kind of thing it is — "Зелье лечения, ×2, зелье", "Щит с шипами, надето, щит".
+  **Delete** adds what it weighs, what it is worth, its armour class or reach, and the game's
+  own description of it.
+
+  **The paperdoll reads, empty slots included** — "нагрудник, Простая мантия, надето", "шлем,
+  пусто". Fourteen slots in the order a person dresses. Nothing else in the game tells you that
+  you have been walking around with no boots on.
+
+  A party member's bag was announced as **"группа сохранений"** until now: it is built from the
+  same control as the save-game list, and the layer could not tell them apart. It says
+  "Гейл, инвентарь, развёрнуто, здоровье 25 из 28, класс брони 11, вес 8,3 из 150" instead.
+
+  **Page Up and Page Down** walk the whole panel: which tab, who it is showing, what is on
+  them, every equipment slot, then every bag in full with its owner named and its rows
+  numbered. **End** answers "what is on me and what am I wearing" on its own.
+
+  **Statuses** come from the character rather than from the panel — the interface keeps them in
+  a collection that cannot be opened, and the game's own entity hands them over plainly.
 - Panels the controller interface opens: the character sheet, the inventory, the radial menus,
   the confirmation boxes.
 
