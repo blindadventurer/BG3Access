@@ -570,6 +570,27 @@ function M.active(textCap, nodeCap, wantThin)
                           focus = info.focus, nodes = info.nodes, capped = info.capped,
                           widgets = #ws }
             if info.focus ~= nil then return rec end
+            -- The widget's own record of where its focus is, which is a different question
+            -- from "is a node under it flagged focused" and answers when that one does not.
+            -- Measured 2026-08-07 on the Larian sign-up screen: SignUp_c reported
+            -- `FocusedElement = UsernameEdit` while nothing under it had IsFocused set, so the
+            -- scan found no focus, the loop fell through to the main menu underneath - which
+            -- did have one, on a button the player was nowhere near - and every question about
+            -- "the screen" was answered by the screen behind the one they were typing into.
+            --
+            -- Guarded by substance for the same reason the fallback is: a badge that exposes a
+            -- focused element must not beat the panel it is floating over.
+            if hasSubstance(info) then
+                local wf = soft(function() return M.widgetFocus(w.node) end)
+                if wf ~= nil then
+                    local wp = props(wf)
+                    rec.focus = { class = select(1, A.splitToString(A.realType(wf))),
+                                  name = str(wp.Name), depth = -1,
+                                  keyboard = wp.IsKeyboardFocused == true,
+                                  text = select(1, A.describe(wf)) }
+                    return rec
+                end
+            end
             if fallback == nil and hasSubstance(info) then fallback = rec end
             if thin == nil and #info.texts > 0 then thin = rec end
         end
@@ -634,6 +655,22 @@ M.SCREEN_TITLES = {
 local function screenTitle(a)
     local named = a.name and M.SCREEN_TITLES[tostring(a.name)]
     if named then return named end
+    -- A screen that names its own heading is better than the first-string rule, and it is the
+    -- game's own words rather than ours. Shallow on purpose: a `Title` further down belongs to
+    -- something inside the screen - the mod browser has one on its tag list - and only a node
+    -- near the root is the screen's. The sign-up screen is what asked for this: its first
+    -- string is the privacy-policy link, so arriving on it announced "Политика
+    -- конфиденциальности" while the player was looking at "СОЗДАТЬ УЧЕТНУЮ ЗАПИСЬ LARIAN".
+    if a.node ~= nil then
+        local t = soft(function()
+            local n = M.namedNode(a.node, "Title", 6, 600, true)
+            if n == nil then return nil end
+            local s = A.collectText(n, 10, 4)[1]
+            if s ~= nil and A.looksLikeText(s) and s ~= "[ForceUpdate]" then return s end
+            return nil
+        end)
+        if t ~= nil then return t end
+    end
     return (a.texts and a.texts[1]) or tostring(a.name)
 end
 
@@ -6075,6 +6112,164 @@ function M.modTick(widget)
     return true
 end
 
+-- Form fields ------------------------------------------------------------------------
+--
+-- A screen that asks to be typed into is a different question from a list: not "which of these
+-- am I on" but "what is being asked for, is there anything in it yet, and can I type now". The
+-- Larian sign-up screen forced this - four inputs, two checkboxes and a button, none of which
+-- the layer said a word about, partly because it was reading the main menu behind them (see
+-- `active`) and partly because a text box has no AlternationIndex and so reached no branch.
+--
+-- Measured on `SignUp_c` 2026-08-07. Every control is named, and every label is the control's
+-- own name without its suffix, carrying the game's own words:
+--
+--     Username         "Имя пользователя*"     UsernameEdit         ls.LSTextBox
+--     Email            "Эл. почта*"            EmailEdit            ls.LSTextBox
+--     Password         "Пароль*"               PasswordEdit         ls.LSPasswordBox
+--     ConfirmPassword  "Подтвердить пароль*"   ConfirmPasswordEdit  ls.LSPasswordBox
+--     TermsCheck, SubscribeCheck               ls.LSCheckBox, carrying their own label
+--     CreateAccountBtn                         ls.LSButton
+--
+-- So a label is found by name and never by position, which is what makes this read the same in
+-- every language - and it is general rather than a list of this screen's fields, so any screen
+-- built the same way reads without being named here.
+--
+-- **A password is never read out.** Not the characters, not the length: only whether there is
+-- something in it. A screen reader speaks aloud, often into a room, and the one thing this
+-- layer must not do is say a password back.
+
+M.INPUT_KINDS = {
+    LSTextBox = "text", LSPasswordBox = "password", LSCheckBox = "check",
+    LSRadioButton = "radio",
+}
+
+--- Matched as a substring, not by equality: `ToString` gives `ls.LSTextBox` and the namespace
+--- is not always there. `kindOf` above learnt this first; an exact lookup here found nothing at
+--- all on the sign-up screen and the whole reader answered nil.
+local function inputKind(cls)
+    for name, kind in pairs(M.INPUT_KINDS) do
+        if cls:find(name, 1, true) then return kind end
+    end
+    return nil
+end
+
+--- The words beside a field, from the node named after it.
+local function fieldLabel(widgetNode, name)
+    if type(name) ~= "string" then return nil end
+    local base = name:match("^(.+)Edit$") or name:match("^(.+)Input$") or name:match("^(.+)Field$")
+    if base == nil then return nil end
+    local n = M.namedNode(widgetNode, base, 12, 2000, true)
+    if n == nil then return nil end
+    local t = A.collectText(n, 20, 6)[1]
+    if t ~= nil and A.looksLikeText(t) then return t end
+    return nil
+end
+
+-- The fields of the open form, in the order they are walked, so a player knows how far down
+-- the column they are. Counted once per screen: a form does not grow.
+M.formOrder = nil
+
+local function formFields(widgetNode, screen)
+    if M.formOrder ~= nil and M.formOrder.screen == screen then return M.formOrder.names end
+    -- Deduplicated by name rather than by node identity. `A.kids` hands back the visual
+    -- children and then the logical ones, a control is in both, and `tostring` gives two
+    -- different addresses for the same element - which is why the first build of this counted
+    -- twelve fields on a form of nine, ran out of budget before the last one, and told the
+    -- player they were on "5 of 12". Two controls of a form never share a name.
+    local names, seen, n = {}, {}, 0
+    -- And by node identity as well, which is what the cost turns on rather than the count:
+    -- without it the same subtree is descended twice at every level and one pass over this
+    -- form measured 86 ms. It is not a complete dedup - two references to one element can
+    -- stringify differently - but it catches the common case, which is the whole of the
+    -- expense.
+    local visited = {}
+    local function rec(o, d)
+        if o == nil or d > 14 or n >= 6000 then return end
+        local ch, cn = A.kids(o)
+        for i = 1, cn do
+            if n >= 6000 then return end
+            local id = tostring(ch[i])
+            if visited[id] then goto continue end
+            visited[id] = true
+            n = n + 1
+            local p = props(ch[i])
+            if p.IsVisible ~= false then
+                local cls = select(1, A.splitToString(A.realType(ch[i])))
+                if (inputKind(cls) ~= nil or cls:find("LSButton", 1, true)) and p.Focusable == true then
+                    local nm = str(p.Name)
+                    if nm ~= "nil" and nm ~= "" and not seen[nm] then
+                        seen[nm] = true
+                        names[#names + 1] = nm
+                    end
+                end
+                rec(ch[i], d + 1)
+            end
+            ::continue::
+        end
+    end
+    rec(widgetNode, 0)
+    M.formOrder = { screen = screen, names = names }
+    return names
+end
+M.formFields = formFields
+
+M.formSaidTyping = nil
+
+--- One field of a form, or nil when the focus is not on one.
+function M.fieldLine(widgetNode, focused, fp, screen)
+    fp = fp or props(focused)
+    local cls = select(1, A.splitToString(A.realType(focused)))
+    local kind = inputKind(cls)
+    if kind == nil then return nil end
+
+    local name = str(fp.Name)
+    local parts = {}
+
+    -- A checkbox carries its own words; an edit box has none and takes them from its label.
+    local label = nil
+    if kind == "check" or kind == "radio" then
+        label = A.collectText(focused, 20, 6)[1]
+    else
+        label = fieldLabel(widgetNode, name)
+    end
+    if label ~= nil and A.looksLikeText(label) then parts[#parts + 1] = label end
+
+    if kind == "text" then
+        parts[#parts + 1] = T"text box"
+        local v = fp.Text
+        if type(v) == "string" then v = v:gsub("^%s+", ""):gsub("%s+$", "") else v = "" end
+        parts[#parts + 1] = (v ~= "") and v or T"empty"
+    elseif kind == "password" then
+        parts[#parts + 1] = T"password box"
+        -- Whether, never what.
+        local v = fp.Text
+        parts[#parts + 1] = (type(v) == "string" and v ~= "") and T"filled in" or T"empty"
+    else
+        parts[#parts + 1] = T"checkbox"
+        parts[#parts + 1] = (fp.IsChecked == true) and T"on" or T"off"
+    end
+
+    local names = formFields(widgetNode, screen)
+    if #names > 1 then
+        for i = 1, #names do
+            if names[i] == name then
+                parts[#parts + 1] = i .. T" of " .. #names
+                break
+            end
+        end
+    end
+
+    -- Said once per screen. On a form the game takes typed characters straight into the field,
+    -- and a player who has been told for hours that the keyboard belongs to the layer has no
+    -- reason to assume it.
+    if (kind == "text" or kind == "password") and M.formSaidTyping ~= screen then
+        M.formSaidTyping = screen
+        parts[#parts + 1] = T"type with the keyboard"
+    end
+
+    return table.concat(parts, ", ")
+end
+
 -- Keeping the input scheme ---------------------------------------------------------
 --
 -- The whole keyboard story rests on the game's control scheme being set to Controller, and
@@ -6883,7 +7078,7 @@ local function readerTick()
         M.screenBig = (#info.texts >= 8)
         _P("[pad] screen -> " .. tostring(widget.name) .. " (" .. info.nodes ..
            " nodes, " .. #info.texts .. " strings)")
-        pend(screenTitle({ name = widget.name, texts = info.texts }))
+        pend(screenTitle({ name = widget.name, node = widget.node, texts = info.texts }))
         dumpStructure(widget)
     end
     M.screenUp = (M.screenBig == true)
@@ -6933,7 +7128,15 @@ local function readerTick()
     local text
     local dedup, pendingCaption = nil, nil
     local marks = nil
-    if alt ~= nil then
+    -- A form field first. It carries no AlternationIndex, so without this it fell through to
+    -- the tab branch below and the player heard nothing at all while moving down a column of
+    -- boxes they were meant to type into.
+    local field = soft(function()
+        return M.fieldLine(widget.node, focused, fp, str(widget.name))
+    end)
+    if field ~= nil then
+        text = field
+    elseif alt ~= nil then
         -- Recount only when the list can have changed: a new screen, a bumper (which is how
         -- tabs are switched), or an index that runs past what was counted.
         if M.listScreen ~= widget.name or M.listCount == nil

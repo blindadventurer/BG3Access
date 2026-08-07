@@ -294,6 +294,18 @@ category instead.
   between moving the story on and running an errand. The list of quest targets leads with the
   main story for the same reason; it still says where the nearest one is when that is
   something else.
+- **Forms — anything with something to type into.** The Larian sign-up screen is the one that
+  forced this, and it was silent twice over: the layer was reading the main menu *behind* it,
+  and a text box has nothing in it to read even when it is found.
+
+  Every field now says what it is asking for, what kind of control it is, whether there is
+  anything in it yet, and how far down the column you are — **"Имя пользователя, поле ввода,
+  пусто, 3 из 9"** — and the first one adds that the keyboard types into the game here rather
+  than into the layer. Checkboxes say whether they are ticked. The labels are the game's own,
+  found by name rather than by position, so a form reads the same in any language.
+
+  **A password is never read back.** Not the characters, not the length — only whether the box
+  is empty or filled in. A screen reader speaks out loud, often into a room.
 - **The mod manager**, which is the screen the game's own mods are installed from. It used to
   read as 210 loose strings: two tab names, then every mod flattened into four unlabelled runs —
   a title, a number, a size, another number — and after them a hundred and twenty filter
