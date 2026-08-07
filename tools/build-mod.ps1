@@ -60,7 +60,11 @@ $modsDir  = Join-Path $appData "Mods"
 # routes are exclusive, so -InstallPak is the switch that swaps one for the other, and nothing
 # else ever puts this file in Mods\.
 $pakPath  = Join-Path $root "dist\BG3Access.pak"
-$diagPak  = Join-Path $modsDir "BG3AccessDiag.pak"
+# The probe builds into dist\ too, and not into Mods\ where it used to. Packaging a release
+# calls this script, and a build step that installs a diagnostic mod into the player's game as
+# a side effect is a build step that undoes a tidy-up nobody asked it to touch. Installing it is
+# a deliberate act now: copy it into Mods\ and register-mod.ps1 -Pak BG3AccessDiag.pak.
+$diagPak  = Join-Path $root "dist\BG3AccessDiag.pak"
 $settings = Join-Path $appData "PlayerProfiles\Public\modsettings.lsx"
 
 $folder   = "BG3Access"
@@ -146,14 +150,12 @@ if ($Pak) {
     New-Item -ItemType Directory -Force (Split-Path $pakPath) | Out-Null
     Pack-Module $modRoot  $pakPath
 
-    # The probe is packed straight into Mods\, and a running game holds an open handle on every
-    # pak it has loaded - so this fails whenever the probe is installed and the game is up. That
-    # is a reason to warn, not a reason to lose the layer's own pak, which was already built.
+    # Non-fatal on purpose: the probe is a development aid, and losing it must not cost the
+    # layer's own pak, which was built a line ago.
     try {
         Pack-Module $diagRoot $diagPak
     } catch {
-        Write-Warning ("could not rebuild the probe at ${diagPak}: " + $_.Exception.Message)
-        Write-Warning "close the game if the probe needs rebuilding - the layer's pak is fine"
+        Write-Warning ("could not build the probe at ${diagPak}: " + $_.Exception.Message)
     }
 }
 
