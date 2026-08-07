@@ -306,6 +306,13 @@ category instead.
 
   **A password is never read back.** Not the characters, not the length — only whether the box
   is empty or filled in. A screen reader speaks out loud, often into a room.
+
+  **What is missing: the letters are not spoken as you type them.** The field says what it held
+  when you arrived, and it will say the whole thing again when you come back to it, but there
+  is no per-character echo while you are typing and no way yet to hear what you have written so
+  far without leaving the field and returning. A Larian account was created on this build
+  regardless — every field was found, filled and submitted by ear — but typing into it is
+  typing blind, and that is the next thing to fix. Passwords will stay silent either way.
 - **The mod manager**, which is the screen the game's own mods are installed from. It used to
   read as 210 loose strings: two tab names, then every mod flattened into four unlabelled runs —
   a title, a number, a size, another number — and after them a hundred and twenty filter
