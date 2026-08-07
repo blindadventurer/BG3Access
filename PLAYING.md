@@ -5,11 +5,20 @@ This is the guide for playing. If you want to know how the layer is built, read
 
 ## Read this part first
 
-**The layer speaks Russian.** Its own words — "walking", "arrived", "2 metres", "a controller
-is needed" — are Russian sentences. Text it takes from the game (item names, dialogue lines,
-menu entries) comes out in whatever language your game is set to. So on an English install you
-will hear English names inside Russian connective words. There is no English voice yet; that
-is a translation job nobody has done, not a missing feature.
+**The layer speaks your game's language.** It asks the game which language it is being played
+in and says its own words — "walking", "arrived", "2 metres", "a controller is needed" — in
+that one. English and Russian are written; every other language falls back to English, which
+means an Italian game gives you Italian item names and dialogue inside English connective
+words. Nothing is silent in any language.
+
+If you would rather hear a different language than the one you play in, put its two-letter code
+— `en` or `ru` — in a file called `lang.txt` next to the mod's other files, in
+`%LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Script Extender\A11y\`. That file wins over
+whatever the game says.
+
+Text the layer takes from the game — item names, dialogue lines, quest objectives, place names,
+menu entries — has always come out in your game's language and still does. It is read through
+the game's own localisation, not translated by us.
 
 **You need a game controller.** Not to play with — you can keep the keyboard — but because the
 layer reads the game's *controller* interface, the one BG3 raises when it sees a pad. Without a
@@ -30,8 +39,9 @@ that rather than pretending. See [What it does not do](#what-it-does-not-do) bel
 - **A game controller** — an Xbox pad, or anything Windows recognises as one.
 - **NVDA or JAWS**, running before you start the game. If neither is there, speech falls back
   to SAPI, which will talk but says everything in one flat stream.
-- A Russian voice in your screen reader, or you will hear the layer's own words spelled out
-  letter by letter.
+- A voice in your screen reader for the language your game is in. The layer says the game's own
+  names and lines as the game wrote them, so a voice that cannot read that language will spell
+  them out letter by letter.
 
 ## Installing
 
@@ -139,34 +149,34 @@ the things standing around you; on a panel it is the lines of the panel.
 doors, items. This is how a room gets built up in your head without sitting through thirty
 barrels first.
 
-One of those kinds is **неизведанное** — the named places of this level you have never stood
+One of those kinds is **unexplored** — the named places of this level you have never stood
 in, nearest first, and it is how a level gets walked without a map: go to the nearest one,
 listen on the way, go again. It shrinks as you explore, and what is left after the named places
-are gone is the anonymous ground between them ("участок").
+are gone is the anonymous ground between them ("area").
 
-Another is **ориентиры**, and it is the one to reach for when you do not know
+Another is **landmarks**, and it is the one to reach for when you do not know
 where to go. It does not list what is near you — it lists the fixtures of the whole level:
 doors, ladders, consoles, levers, keys. Distance and direction, at any range. That is the
 list that ends a "where is the thing my quest is about" walk in one press instead of forty.
 
-Every row of it now says **which place it is part of** — "рычаг, Оскверненный храм, 40 м" —
+Every row of it now says **which place it is part of** — "lever, Defiled Temple, 40 m" —
 and rows in the same place are kept together, so a hundred fixtures arrive as eight or ten
-groups instead of one flat run. What the game itself has pointed you at is marked "по
-заданию", and only ever for a quest you have actually seen in your journal.
+groups instead of one flat run. What the game itself has pointed you at is marked "quest
+target", and only ever for a quest you have actually seen in your journal.
 
-Another kind is **локации** — the places of the level by name, with **the fast-travel shrines
+Another kind is **places** — the places of the level by name, with **the fast-travel shrines
 you have actually found** among them. They come grouped the way the landmarks do: everything that belongs to the grove
 is heard together, then the forest, then the swamp, each group led by its nearest member, so
 fifty names arrive as eight places rather than one long run. A place the story is currently
-pointing into says **"по заданию"**, which is the shortest answer there is to "where should I
-go today" — "Изумрудная роща, по заданию, 98 м", "Лагерь гоблинов, точка перехода, на два,
-240 м". The one you are standing in says "вы здесь". Whether you have been somewhere before is
-not said here — that is the whole of what **неизведанное** is for, and saying it twice would
+pointing into says **"quest target"**, which is the shortest answer there is to "where should I
+go today" — "Emerald Grove, quest target, 98 m", "Goblin Camp, waypoint, two o'clock,
+240 m". The one you are standing in says "you are here". Whether you have been somewhere before
+is not said here — that is the whole of what **unexplored** is for, and saying it twice would
 put the same two words on nearly every row of a fresh level.
 
 The shrines are the game's own record, out of the save: the sixteen of Act 1 do not all appear
 at once any more, only the ones this playthrough has switched on — and finding a new one is
-said out loud when it happens ("Новая точка перехода: Заросшие руины"), which nothing in the
+said out loud when it happens ("New waypoint: Overgrown Ruins"), which nothing in the
 interface announced before.
 
 Names are never hidden. The map's fog cannot be read at all — it is a mask the renderer draws,
@@ -174,10 +184,10 @@ carried by no component, no widget and no line of the game's own scripts — so 
 what it knows would be taking away the only thing standing in for a map. Walking to a place works like
 walking to anything else: **Alt + Home**, in hops you can hear the end of.
 
-The name of the place is also spoken on its own the moment you walk into one — "Локация:
-Изумрудная роща" — the way the game prints it on screen for everyone else. So "where am I"
+The name of the place is also spoken on its own the moment you walk into one — "Place: Emerald
+Grove" — the way the game prints it on screen for everyone else. So "where am I"
 usually needs no key at all; when it does, the place you are in is the first row of
-**локации**, the one that says "вы здесь".
+**places**, the one that says "you are here".
 
 ### Places you cannot walk to in a straight line
 
@@ -187,8 +197,8 @@ whose door leads to them — so a distance and a bearing to one are correct and 
 walking that way ends in open ground.
 
 The layer now knows every link between the walkable islands of a level: the doors, hatches,
-ladders and rings the game itself uses. A row you cannot reach directly says **"напрямую не
-пройти"**, and a door that leads off the island you are on says **"переход"** — that is how a
+ladders and rings the game itself uses. A row you cannot reach directly says **"no direct
+route"**, and a door that leads off the island you are on says **"crossing"** — that is how a
 hatch worth crossing the map for is told from a cupboard.
 
 Press **Alt + Home** on one of those and the layer does not walk into the wall: it says how many
@@ -238,18 +248,18 @@ category instead.
 - Conversations: who is speaking, the line, and the answers as you move between them.
 - The world around you, by category and by distance, and walking to any of it with progress
   reported on the way. A body or a box says what is in it as you step past — three names,
-  then "и ещё" and a count — so finding the one corpse that holds a quest item does not mean
+  then "and 4 more" — so finding the one corpse that holds a quest item does not mean
   walking to seventeen of them in turn.
 - **Things the game itself refuses to name.** The console that ends the prologue and the rune
   that opens a pod both have no name at all in the game's data, so nothing could ever have
-  read them out. The layer now calls such a thing what it is — пульт, рычаг, лестница, ключ —
+  read them out. The layer now calls such a thing what it is — console, lever, ladder, key —
   taken from what the level was built from.
-- **Where you are, by name.** The game has a name for every part of every level — Изумрудная
-  роща, Оскверненный храм, Приют Вокин — and 268 of them, with their outlines, now travel with
+- **Where you are, by name.** The game has a name for every part of every level — Emerald
+  Grove, Defiled Temple, Waukeen's Rest — and 268 of them, with their outlines, now travel with
   the layer. It says the name when you walk in, lists them all as a category, and attaches the
   place to everything else it names, so a landmark three hundred metres off is somewhere rather
   than a bearing. The fast-travel shrines come with it: sixteen of them in Act 1, each with the
-  name the game gives it instead of "точка перехода" sixteen times over.
+  name the game gives it instead of "waypoint" sixteen times over.
 - **The camera drifting off the character.** BG3 sometimes leaves the view a long way from
   whoever you are steering, and the sound goes with it — the footsteps fade and there is no
   way to tell why. The layer measures the distance and says so when it is far out of its own
@@ -267,8 +277,8 @@ category instead.
   behind it — and it is not paginated there, however many pages the game draws it across, so
   you never have to turn one.
 
-  A book announces itself by name and reads its first paragraph: «Книга "Талис: прорицание без
-  магии", ещё 8 абзацев», then the text. **Page Down** takes the next paragraph, **Page Up**
+  A book announces itself by name and reads its first paragraph: "Book: Thaniel's Divination
+  Without Magic, 8 more paragraphs", then the text. **Page Down** takes the next paragraph, **Page Up**
   the previous, each with its number, so you can stop, go back and hear one again. A list
   inside a note is read line by line, and a signature is its own line. It is not read out in
   one breath on purpose: a book is minutes of speech, and there has to be a way back.
@@ -279,18 +289,18 @@ category instead.
 - Combat: whose turn it is, what you are aiming at, and what the game says about the move
   under the cursor.
 - The journal objective, and when one finishes and the next appears — **and which section of
-  the journal it belongs to**. "Основное задание" and "Роща друидов" are the game's own words
+  the journal it belongs to**. "Main Quest" and "The Druid Grove" are the game's own words
   for its own quest categories, and hearing which one a task came from is the difference
   between moving the story on and running an errand. The list of quest targets leads with the
   main story for the same reason; it still says where the nearest one is when that is
   something else.
-- **The context menu** — the one on **X**, where "Вскрыть" lives along with everything else an
-  object will allow. It reads the whole list the moment it opens ("Действия: Использовать,
-  Вскрыть, Перейти") and then each row as you move onto it. Worth reaching for on anything that
+- **The context menu** — the one on **X**, where "Lockpick" lives along with everything else an
+  object will allow. It reads the whole list the moment it opens ("Actions: Use,
+  Lockpick, Move here") and then each row as you move onto it. Worth reaching for on anything that
   looks locked, stuck or interesting: the ordinary A press only ever does the obvious thing.
 - **The question the game asks before a step that cannot be taken back.** Larian call it a
   ready check, and it is the only warning there is before an act closes behind you: the modal
-  that says "возможно, вы уже не сможете вернуться", the one that warns the region ahead is
+  that says you may not be able to return, the one that warns the region ahead is
   hard for a party of this level, and the one at the end of a day that says somebody in camp
   still wants to talk. About fifteen of them carry every point of no return in the game. The
   layer reads them out, in the game's own words, and **never answers them for you.**
@@ -302,20 +312,20 @@ category instead.
   of thirty of them and the layer had nothing to say.
 
   Now each one says its name, what it costs, how far it reaches, whether it is an attack or a
-  save, what damage it does and which school it belongs to — "Пылающие руки, действие, ячейка
-  1 круга, дальность 5 м, спасбросок Ловкости, урон 3к6 огнём, воплощение, 1 из 17" — and
-  **Delete** gives the game's own description of it at length. An unfilled slot says "пусто"
+  save, what damage it does and which school it belongs to — "Burning Hands, action, level
+  1 slot, range 5 m, Dexterity saving throw, 3d6 fire damage, evocation, 1 of 17" — and
+  **Delete** gives the game's own description of it at length. An unfilled slot says "empty"
   rather than nothing, so you can hear how many choices are still yours to make.
 
   **Page Up and Page Down survey the whole thing** without moving the cursor: the step you are
   on, how many of its slots are filled, then every choice numbered the way the cursor counts
   them, then the character sheet. Spells you cannot take — usually because you already know
-  them — are listed too, marked "недоступно"; the cursor cannot reach those, so this is the
+  them — are listed too, marked "unavailable"; the cursor cannot reach those, so this is the
   only way to hear them.
 
   The screen is a sequence rather than a set of tabs: finishing one selection puts the next in
   front of you with no key pressed and nothing said. Each new step is now announced with how
-  much of it is left ("Заклинания, выбрано 0 из 2"), and when the last choice is made the layer
+  much of it is left ("Spells, chosen 0 of 2"), and when the last choice is made the layer
   says so — that is the moment the button at the bottom starts working, and nothing else tells
   you. **End** answers the same question at any time: what is still undecided, then the sheet.
 - **The character panel** — the one the quick menu opens, and the same problem as levelling up
@@ -324,17 +334,17 @@ category instead.
   the screen. So the cursor moved across a bag and said nothing.
 
   Now a cell says its name, how many there are, whether it is worn, new or stolen, how rare it
-  is and what kind of thing it is — "Зелье лечения, ×2, зелье", "Щит с шипами, надето, щит".
-  **Delete** adds what it weighs, what it is worth, its armour class or reach, and the game's
-  own description of it.
+  is and what kind of thing it is — "Potion of Healing, ×2, potion", "Spiked Shield, equipped,
+  shield". **Delete** adds what it weighs, what it is worth, its armour class or reach, and the
+  game's own description of it.
 
-  **The paperdoll reads, empty slots included** — "нагрудник, Простая мантия, надето", "шлем,
-  пусто". Fourteen slots in the order a person dresses. Nothing else in the game tells you that
+  **The paperdoll reads, empty slots included** — "chest, Simple Robe, equipped", "helmet,
+  empty". Fourteen slots in the order a person dresses. Nothing else in the game tells you that
   you have been walking around with no boots on.
 
-  A party member's bag was announced as **"группа сохранений"** until now: it is built from the
+  A party member's bag was announced as a **save group** until now: it is built from the
   same control as the save-game list, and the layer could not tell them apart. It says
-  "Гейл, инвентарь, развёрнуто, здоровье 25 из 28, класс брони 11, вес 8,3 из 150" instead.
+  "Gale, inventory, expanded, health 25 of 28, armour class 11, weight 8.3 of 150" instead.
 
   **Page Up and Page Down** walk the whole panel: which tab, who it is showing, what is on
   them, every equipment slot, then every bag in full with its owner named and its rows
@@ -345,15 +355,15 @@ category instead.
 - **What the buttons do, and where you are.** Two questions this panel makes hard for somebody
   who cannot see it, and both are now answered out loud.
 
-  Every row says what **A** would do to it — "Кожаный доспех, нагрудник, A — надеть",
-  "Зелье лечения, ×2, зелье, A — выпить", "шлем, пусто, A — выбрать". That is not a guess: the
+  Every row says what **A** would do to it — "Leather Armour, chest, A - equip",
+  "Potion of Healing, ×2, potion, A - drink", "helmet, empty, A - select". That is not a guess: the
   panel keeps a row of hints along the bottom, one per action, and shows only the ones that
   apply to whatever the cursor is on. The layer reads the caption the game itself put there.
   **Page Up / Page Down** and **Delete** list all of them, so "what can I even press here" has
   an answer at any moment.
 
-  And it says **which side of the panel you are on** the moment you cross — "Снаряжение" when
-  the cursor moves onto the body, "Сумка: Гейл" when it moves into somebody's bag. Nothing in
+  And it says **which side of the panel you are on** the moment you cross — "Equipment" when
+  the cursor moves onto the body, "Bag: Gale" when it moves into somebody's bag. Nothing in
   the rows themselves distinguishes the two: a breastplate reads the same worn or carried, and
   the game marks the boundary with a gap on screen and nothing else.
 - Panels the controller interface opens: the character sheet, the inventory, the radial menus,

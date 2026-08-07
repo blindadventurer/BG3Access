@@ -382,8 +382,8 @@ Write-Host "".PadRight(60, "-")
 if ($problems.Count -eq 0) {
     Write-Host "Installed."
     Write-Host ""
-    # ASCII only in this file: PS 5.1 reads a .ps1 with no BOM as ANSI, and the line the layer
-    # actually speaks here is Russian - written out, it would print as mojibake.
+    # ASCII only in this file: PS 5.1 reads a .ps1 with no BOM as ANSI, so a line quoting what
+    # the layer says in a language that is not English would print as mojibake.
     Write-Host "Next:"
     $n = 1
     if (-not $pad) {

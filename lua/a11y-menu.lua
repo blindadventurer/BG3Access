@@ -17,6 +17,15 @@
 local M = {}
 M.DIR = "A11y/"
 
+-- The layer's own words are written in English and said in the language the game is being
+-- played in. `T` is the whole of that at a call site, and it is deliberately harmless: with
+-- no a11y-lang loaded it is the identity function, so every module here still runs on its own
+-- at the console and simply speaks English.
+local Lang = _G.Lang
+local T = (Lang ~= nil and Lang.t) or function(s) return s end
+M.Lang = Lang
+M.T = T
+
 -- helpers ---------------------------------------------------------------------
 
 local function try(fn, ...)
@@ -798,22 +807,22 @@ end
 -- the input buffer is ANSI and a Russian string literal breaks the Lua chunk outright.
 -- This file is read as UTF-8 by Ext.IO.LoadFile, so the text is safe on this side.
 M.STEP = {
-    start    = "старт",
-    tab1     = "таб один",
-    tab2     = "таб два",
-    shifttab = "шифт таб",
-    down     = "стрелка вниз",
-    up       = "стрелка вверх",
-    evdown   = "событие вниз с клавиатуры",
-    evpad    = "событие вниз с пада",
-    accept   = "подтверждение",
+    start    = T"start",
+    tab1     = T"tab one",
+    tab2     = T"tab two",
+    shifttab = T"shift tab",
+    down     = T"arrow down",
+    up       = T"arrow up",
+    evdown   = T"key down event",
+    evpad    = T"pad down event",
+    accept   = T"accept",
 }
 
 --- Speak where the focus is, so a test can be followed from inside the game.
 --- Takes an ASCII step key, not the phrase itself.
 function M.focusSay(step)
     local f = M.focusNow()
-    local what = (f and f.label) or "нет фокуса"
+    local what = (f and f.label) or T"no focus"
     local prefix = step and (M.STEP[step] or tostring(step))
     M.say(prefix and (prefix .. ": " .. what) or what, true)
     return f
@@ -1319,16 +1328,16 @@ end
 function M.speakCurrent(withPosition)
     local items = M.items or {}
     local it = items[M.index]
-    if it == nil then M.say("пусто", true) return end
+    if it == nil then M.say(T"empty", true) return end
     local text = it.label
-    if it.enabled == false then text = text .. ", недоступно" end
-    if withPosition then text = text .. ", " .. M.index .. " из " .. #items end
+    if it.enabled == false then text = text .. T", unavailable" end
+    if withPosition then text = text .. ", " .. M.index .. T" of " .. #items end
     M.say(text, true)
 end
 
 function M.move(delta)
     local items = M.collect()
-    if #items == 0 then M.say("нет пунктов", true) return end
+    if #items == 0 then M.say(T"no entries", true) return end
 
     local cur = M.locate(items)
     local idx
@@ -1353,12 +1362,12 @@ function M.announceLater(ms)
         local items = M.collect()
         if #items == 0 then
             M.index, M.cursorKey = 0, nil
-            M.say("экран без пунктов", true)
+            M.say(T"screen with no entries", true)
             return
         end
         M.index = 1
         M.cursorKey = stableKey(items[1])
-        M.say(#items .. " пунктов. " .. items[1].label, true)
+        M.say(#items .. T" entries. " .. items[1].label, true)
     end
     local wait = Ext.Timer and Ext.Timer.WaitForRealtime
     if type(wait) == "function" then
@@ -1381,10 +1390,10 @@ function M.activate()
     local idx = M.locate(items)
     if idx == 0 then idx = M.index end
     local it = items[idx]
-    if it == nil then M.say("нечего нажимать", true) return false end
+    if it == nil then M.say(T"nothing to press", true) return false end
     if it.enabled == false then
         M.sound("blocked")
-        M.say(it.label .. ", недоступно", true)
+        M.say(it.label .. T", unavailable", true)
         return false
     end
     M.index = idx
@@ -1409,7 +1418,7 @@ function M.activate()
         M.announceLater()
     else
         M.sound("blocked")
-        M.say(it.label .. ", не удалось нажать", true)
+        M.say(it.label .. T", could not press", true)
     end
     return ok
 end
@@ -1651,7 +1660,7 @@ local function watchTick()
             M.saidUnreadable = true
             M.watchLast = "<unreadable>"
             _P("[a11y] root unreachable (" .. total .. " nodes) - screen not readable")
-            M.say("Этот экран через дерево не читается", true)
+            M.say(T"This screen cannot be read through the tree", true)
         end
         return
     end
@@ -1670,7 +1679,7 @@ local function watchTick()
         -- which made it actively misleading - it announced content that was not on screen.
         if M.absent >= 10 and not M.dumpedThisAbsence then
             M.dumpedThisAbsence = true
-            M.say("фокус потерян", true)
+            M.say(T"focus lost", true)
         end
         return
     end
@@ -1735,7 +1744,7 @@ function M.watchStart()
     M.autoDumps = 0
     holdControllerMode()
     _P("[a11y] focus watcher running (" .. tostring(id) .. ")")
-    M.say("Следилка включена. Води геймпадом. Экраны без фокуса буду читать целиком.", true)
+    M.say(T"Focus watcher on. Move the pad. Screens with no focus will be read whole.", true)
     return true
 end
 
@@ -1787,7 +1796,7 @@ function M.start()
     M.index = 0
     local n = #M.collect()
     _P("[a11y] running, subscription " .. tostring(id) .. ", " .. n .. " entries")
-    M.say("Озвучка меню включена. " .. n .. " пунктов. Стрелки — движение, Enter — выбор.", true)
+    M.say(T"Menu speech on. " .. n .. T" entries. Arrows move, Enter selects.", true)
     return true
 end
 
@@ -1798,7 +1807,7 @@ function M.stop()
     _G.A11Y_SUB, _G.A11Y_TICK = nil, nil
     M.running = false
     _P("[a11y] stopped")
-    M.say("Озвучка меню выключена", true)
+    M.say(T"Menu speech off", true)
 end
 
 --- Everything the recon needs, in one call.

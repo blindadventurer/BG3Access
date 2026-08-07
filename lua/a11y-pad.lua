@@ -38,6 +38,7 @@ end
 
 local M = {}
 local try, soft, props = A.try, A.soft, A.props
+local Lang, T = A.Lang, A.T
 
 local function now()
     return tonumber(soft(function() return Ext.Utils.MonotonicTime() end)) or 0
@@ -52,32 +53,15 @@ local function str(v)
 end
 M.str = str
 
---- Russian counts out loud. A screen reader saying "3 вариантов" is the sort of thing that
---- grates on every single utterance, and the rule is three lines.
-local PLURALS = {
-    ["вариант"]  = { "вариант", "варианта", "вариантов" },
-    ["строка"]   = { "строка", "строки", "строк" },
-    ["пункт"]    = { "пункт", "пункта", "пунктов" },
-    ["объект"]   = { "объект", "объекта", "объектов" },
-    ["сохранение"] = { "сохранение", "сохранения", "сохранений" },
-    ["кампания"] = { "кампания", "кампании", "кампаний" },
-    ["час"]      = { "час", "часа", "часов" },
-    ["минута"]   = { "минута", "минуты", "минут" },
-    ["ход"]      = { "ход", "хода", "ходов" },
-    ["предмет"]  = { "предмет", "предмета", "предметов" },
-    ["абзац"]    = { "абзац", "абзаца", "абзацев" },
-    ["заклинание"] = { "заклинание", "заклинания", "заклинаний" },
-}
-
+--- A number and the thing it counts, said the way the language counts.
+---
+--- The word is always the English singular; what happens to it belongs to a11y-lang, because
+--- English needs two forms and Russian three, and a screen reader saying "3 вариантов" is the
+--- sort of thing that grates on every single utterance.
 function M.plural(n, word)
-    local forms = PLURALS[word]
-    if forms == nil then return n .. " " .. word end
-    local a, b = n % 10, n % 100
-    local form
-    if a == 1 and b ~= 11 then form = forms[1]
-    elseif a >= 2 and a <= 4 and (b < 12 or b > 14) then form = forms[2]
-    else form = forms[3] end
-    return n .. " " .. form
+    if Lang ~= nil then return Lang.plural(n, word) end
+    if n == 1 then return n .. " " .. word end
+    return n .. " " .. word .. "s"
 end
 
 -- speech ------------------------------------------------------------------------
@@ -612,35 +596,35 @@ M.lastFocus = nil
 -- while the player was looking at the quest log. Named screens are listed here; everything
 -- else keeps the first-line rule, which is right far more often than it is wrong.
 M.SCREEN_TITLES = {
-    JournalQuest = "Дневник заданий",
-    JournalQuest_c = "Дневник заданий",
-    Journal = "Журнал",
-    Journal_c = "Журнал",
+    JournalQuest = T"Quest journal",
+    JournalQuest_c = T"Quest journal",
+    Journal = T"Journal",
+    Journal_c = T"Journal",
     -- Character creation has no title text of its own at all: the first string in the widget
     -- is the value of the first spinner, so arriving on it announced "По выбору".
-    CharacterCreation_c = "Создание персонажа",
-    CharacterCreation = "Создание персонажа",
+    CharacterCreation_c = T"Character creation",
+    CharacterCreation = T"Character creation",
     -- Levelling up is built from the same panels and has the same problem: its first string
     -- is the heading of whichever step the sequence happens to be on ("Заклинания"), which
     -- says what the player is choosing and not that a level is being taken at all.
-    CharacterLevelUp_c = "Повышение уровня",
-    CharacterLevelUp = "Повышение уровня",
-    CharacterRespec_c = "Перераспределение",
-    CharacterFullRespec_c = "Пересоздание персонажа",
+    CharacterLevelUp_c = T"Level up",
+    CharacterLevelUp = T"Level up",
+    CharacterRespec_c = T"Respec",
+    CharacterFullRespec_c = T"Full respec",
     -- The loot panel's first string is the weight readout ("49,1"), which as a title says
     -- nothing about what has just opened in front of the player.
-    Container_c = "Контейнер",
-    Trade_c = "Обмен",
-    Loot_c = "Добыча",
+    Container_c = T"Container",
+    Trade_c = T"Trade",
+    Loot_c = T"Loot",
     -- The options screen has no title text either, and its first string is the name of the
     -- first tab - which the tab strip is about to announce in its own right. So arriving
     -- there said "Игра. Игра." and never the word the player pressed to get there.
-    Options_c = "Параметры",
-    Options = "Параметры",
+    Options_c = T"Options",
+    Options = T"Options",
     -- A book holds no text in its tree at all - `ls.LSBook` lays the page out itself - so
     -- there is no first string for the rule to take.
-    Book_c = "Книга",
-    Book = "Книга",
+    Book_c = T"Book",
+    Book = T"Book",
 }
 
 local function screenTitle(a)
@@ -714,12 +698,12 @@ end
 
 local function sayLine(delta)
     local n = #M.lines
-    if n == 0 then say("нет строк") return end
+    if n == 0 then say(T"no lines") return end
     local i = M.cursor + delta
     if i < 1 then i = 1 end
     if i > n then i = n end
     M.cursor = i
-    say(M.lines[i] .. ", " .. i .. " из " .. n)
+    say(M.lines[i] .. ", " .. i .. T" of " .. n)
 end
 
 --- In a session the review cursor walks the world instead of a screen: there is no panel to
@@ -780,7 +764,7 @@ local function perform(cmd)
         -- settings column are not, and reading them at every step would bury the one word
         -- that changed.
         local lines = M.detailsLines()
-        if lines == nil then say("Подробностей нет") return end
+        if lines == nil then say(T"No details") return end
         M.lines, M.cursor, M.linesFrom = lines, 0, "details"
         say(table.concat(lines, ". "))
     elseif cmd == "summary" then
@@ -834,16 +818,16 @@ local function perform(cmd)
         -- summary panel is a line of the summary - so it answered "Интеллект, 10" while the
         -- player stood on the origin carousel.
         local a = M.active(120, 2500)
-        if a == nil then say("Экран не читается") return end
+        if a == nil then say(T"This screen cannot be read") return end
         local parts = { screenTitle(a) }
         if M.tab ~= nil then parts[#parts + 1] = M.tab end
         local f = soft(function() return M.widgetFocus(a.node) end)
         local what = (f ~= nil and M.focusText(f)) or (a.focus and a.focus.text)
         if what ~= nil then parts[#parts + 1] = what end
-        parts[#parts + 1] = #a.texts .. " строк"
+        parts[#parts + 1] = M.plural(#a.texts, "line")
         say(table.concat(parts, ", "))
     elseif cmd == "repeat" then
-        if M.lastSaid then A.say(M.lastSaid, true) else say("нечего повторить") end
+        if M.lastSaid then A.say(M.lastSaid, true) else say(T"nothing to repeat") end
     elseif cmd == "next" then
         if nav ~= nil then nav.step(1) else refreshLines() sayLine(1) end
     elseif cmd == "prev" then
@@ -1023,7 +1007,7 @@ local function readRow(node)
         local cls, label = A.splitToString(A.realType(o))
 
         if cls:find("ListBox", 1, true) and not cls:find("Item", 1, true) then
-            kind = kind or "список"
+            kind = kind or T"list"
             local ch, cn = A.kids(o)
             for i = 1, cn do
                 local cp = props(ch[i])
@@ -1036,12 +1020,12 @@ local function readRow(node)
         end
 
         if cls:find("TickBox", 1, true) or cls:find("CheckBox", 1, true) then
-            kind = "флажок"
+            kind = T"checkbox"
             if p.IsChecked ~= nil then
-                value = (p.IsChecked == true) and "включено" or "выключено"
+                value = (p.IsChecked == true) and T"on" or T"off"
             end
         elseif cls:find("Slider", 1, true) then
-            kind = "ползунок"
+            kind = T"slider"
             if type(p.Value) == "number" then value = tostring(math.floor(p.Value + 0.5)) end
         end
 
@@ -1721,9 +1705,9 @@ function M.contextTick(ws)
         M.ctxItems = items
         M.ctxFocus = nil
         if #items > 0 then
-            say("Действия: " .. table.concat(items, ", "))
+            say(T"Actions: " .. table.concat(items, ", "))
         else
-            say("Действия, пусто")
+            say(T"Actions, empty")
         end
         return true
     end
@@ -1808,8 +1792,11 @@ function M.campTick(ws)
         local a, b = s:match("^(%d+)%s*/%s*(%d+)$")
         if a ~= nil then
             have, need = tonumber(a), tonumber(b)
-        elseif s == "Припасы" then                       -- the label of the pair above
-        elseif s:find("отдых") then rest = s             -- what this much food buys
+        -- The game's own two strings, recognised through their localisation handles so that
+        -- the panel reads the same way in every language it is written in.
+        elseif Lang ~= nil and Lang.gset("supplies")[s] then   -- the label of the pair above
+        elseif Lang ~= nil and s:lower():find(Lang.g("longRest") or "\0", 1, true) then
+            rest = s                                     -- what this much food buys
         else others[#others + 1] = s end
     end
     if have == nil and rest == nil then return false end
@@ -1820,14 +1807,14 @@ function M.campTick(ws)
     M.campKey = key
 
     local parts = {}
-    if first then parts[#parts + 1] = "Лагерь" end
+    if first then parts[#parts + 1] = T"Camp" end
     if have ~= nil then
-        parts[#parts + 1] = "припасы " .. have .. " из " .. need
+        parts[#parts + 1] = T"supplies " .. have .. T" of " .. need
         -- The one thing the panel never says out loud and the player has to know: enough food
         -- is the difference between a night that heals everything and a nap.
         if first then
             parts[#parts + 1] = (need ~= nil and have >= need)
-                and "хватает на долгий отдых" or "на долгий отдых не хватает"
+                and T"enough for a long rest" or T"not enough for a long rest"
         end
     end
     if rest ~= nil then parts[#parts + 1] = rest end
@@ -1943,34 +1930,39 @@ function M.messageBox(ws)
     return { node = node, lines = lines, key = table.concat(lines, "|") }
 end
 
-local SAVE_KIND = { Autosave = "Автосохранение", QuickSave = "Быстрое сохранение" }
-
-local MONTHS = { "января", "февраля", "марта", "апреля", "мая", "июня",
-                 "июля", "августа", "сентября", "октября", "ноября", "декабря" }
+local SAVE_KIND = { Autosave = T"Autosave", QuickSave = T"Quicksave" }
 
 --- "31/7/2026 02:19" as a date a voice can read.
 ---
---- Left alone if it does not parse: a different locale writes the date differently and a
---- half-understood string is worse than the game's own.
+--- Left alone if it does not parse, and left alone in every language that has no month names
+--- in a11y-lang - which is all of them but Russian, on purpose. The order of the numbers in
+--- that string is the game's, and the only copy it has ever been read from writes the day
+--- first; reading "3/7" as the third of July when the copy that wrote it meant the seventh of
+--- March would be a confident lie, and the raw string is not bad to listen to.
 local function saveWhen(s)
     if type(s) ~= "string" then return nil end
+    local months = Lang ~= nil and Lang.months() or nil
+    if months == nil then return s end
     local d, m, y, hh, mm = s:match("^(%d+)/(%d+)/(%d+)%s+(%d+):(%d+)")
     if d == nil then return s end
-    local month = MONTHS[tonumber(m)]
+    local month = months[tonumber(m)]
     if month == nil then return s end
     return tonumber(d) .. " " .. month .. " " .. y .. ", " .. hh .. ":" .. mm
 end
 M.saveWhen = saveWhen
 
 --- "1ч 39м" spelled out - the game's own form is read as two letters.
+---
+--- The letters between the numbers are the game's, and they are different in every language,
+--- so nothing here looks at them: two numbers in order are hours and minutes.
 local function savePlaytime(s)
     if type(s) ~= "string" then return nil end
-    local h, m = s:match("^(%d+)%s*ч%s*(%d+)%s*м")
+    local h, m = s:match("^(%d+)%D+(%d+)")
     if h == nil then return s end
     h, m = tonumber(h), tonumber(m)
     local parts = {}
-    if h > 0 then parts[#parts + 1] = M.plural(h, "час") end
-    if m > 0 or h == 0 then parts[#parts + 1] = M.plural(m, "минута") end
+    if h > 0 then parts[#parts + 1] = M.plural(h, "hour") end
+    if m > 0 or h == 0 then parts[#parts + 1] = M.plural(m, "minute") end
     return table.concat(parts, " ")
 end
 
@@ -1980,7 +1972,7 @@ local function saveName(rec)
     local title = tostring(rec.Title or "")
     local word = SAVE_KIND[tostring(rec.Type)]
     if word == nil then
-        if title == "" then return "Сохранение" end
+        if title == "" then return T"Save" end
         return title
     end
     local n = title:match("_(%d+)$")
@@ -1993,10 +1985,10 @@ end
 --- stepping through a list is choosing, and these are what the choice turns on.
 local function saveFlags(rec)
     local out = {}
-    if rec.IsHonourMode == true then out[#out + 1] = "режим чести" end
-    if rec.HasMissingMods == true then out[#out + 1] = "не хватает модов" end
+    if rec.IsHonourMode == true then out[#out + 1] = T"honour mode" end
+    if rec.HasMissingMods == true then out[#out + 1] = T"mods missing" end
     if rec.Validity ~= nil and tostring(rec.Validity) ~= "Valid" then
-        out[#out + 1] = "нельзя загрузить"
+        out[#out + 1] = T"cannot be loaded"
     end
     return out
 end
@@ -2023,7 +2015,7 @@ local function saveLine(rec, index, count)
     if when ~= nil then parts[#parts + 1] = when end
     for _, f in ipairs(saveFlags(rec)) do parts[#parts + 1] = f end
     if index ~= nil and count ~= nil and count > 1 then
-        parts[#parts + 1] = index .. " из " .. count
+        parts[#parts + 1] = index .. T" of " .. count
     end
     return table.concat(parts, ", ")
 end
@@ -2034,14 +2026,14 @@ M.saveLine = saveLine
 --- `short` is for the list of them all, where the word "кампания" before every name and the
 --- position of a line being read in order are both noise.
 local function groupLine(g, index, count, short)
-    local parts = { g.name or "Прохождение" }
-    if not short then parts[#parts + 1] = "кампания" end
+    local parts = { g.name or T"Playthrough" }
+    if not short then parts[#parts + 1] = T"campaign" end
     if g.count ~= nil and g.count > 0 then
-        parts[#parts + 1] = M.plural(g.count, "сохранение")
+        parts[#parts + 1] = M.plural(g.count, "save")
     end
-    parts[#parts + 1] = g.expanded and "развёрнуто" or "свёрнуто"
+    parts[#parts + 1] = g.expanded and T"expanded" or T"collapsed"
     if not short and index ~= nil and count ~= nil and count > 1 then
-        parts[#parts + 1] = index .. " из " .. count
+        parts[#parts + 1] = index .. T" of " .. count
     end
     return table.concat(parts, ", ")
 end
@@ -2234,34 +2226,34 @@ function M.saveDetails(widget, st, name)
         local rec = st.rec
         out[#out + 1] = saveName(rec)
         if st.group ~= nil and st.group.name ~= nil then
-            out[#out + 1] = "Кампания " .. st.group.name
+            out[#out + 1] = T"Campaign " .. st.group.name
         end
         local where = loca(rec.LevelName)
         if type(where) == "string" and not where:find("^h%x") then out[#out + 1] = where end
         local when = saveWhen(rec.TimeString)
         if when ~= nil then out[#out + 1] = when end
         local played = savePlaytime(rec.PlayTimeString)
-        if played ~= nil then out[#out + 1] = "Время игры " .. played end
+        if played ~= nil then out[#out + 1] = T"Play time " .. played end
         local diff = loca(rec.Difficulty)
         if type(diff) == "string" and diff ~= "" and not diff:find("^h%x") then
-            out[#out + 1] = "Сложность " .. diff
+            out[#out + 1] = T"Difficulty " .. diff
         end
         if type(rec.Description) == "string" and rec.Description ~= "" then
             out[#out + 1] = rec.Description
         end
         if rec.HasMods == true or rec.HasUnofficialMods == true then
-            out[#out + 1] = "с модами"
+            out[#out + 1] = T"with mods"
         end
         for _, f in ipairs(saveFlags(rec)) do out[#out + 1] = f end
         if type(rec.Version) == "string" and rec.Version ~= "" then
-            out[#out + 1] = "Версия " .. rec.Version
+            out[#out + 1] = T"Version " .. rec.Version
         end
         if st.index ~= nil and st.count ~= nil then
-            out[#out + 1] = st.index .. " из " .. st.count
+            out[#out + 1] = st.index .. T" of " .. st.count
         end
     end
     local prompts = M.savePrompts(widget)
-    if #prompts > 0 then out[#out + 1] = "Действия: " .. table.concat(prompts, ", ") end
+    if #prompts > 0 then out[#out + 1] = T"Actions: " .. table.concat(prompts, ", ") end
     if #out == 0 then return nil end
     return out
 end
@@ -2270,7 +2262,7 @@ end
 function M.saveSummary(widget, name)
     local st = M.saveState(widget, nil, false, name)
     if st == nil or #st.groups == 0 then return nil end
-    local out = { M.plural(#st.groups, "кампания") }
+    local out = { M.plural(#st.groups, "campaign") }
     for i, g in ipairs(st.groups) do
         out[#out + 1] = groupLine(g, i, #st.groups, true)
     end
@@ -2456,7 +2448,7 @@ function M.rollTick(ws)
             -- the bare difficulty number, its two-word capital label, and the placeholder. The
             -- first filter here asked for a lowercase letter and threw away every number the
             -- player was there to hear.
-            if s ~= "[ForceUpdate]" and s ~= "Бросить кубик"
+            if s ~= "[ForceUpdate]" and not (Lang ~= nil and Lang.gset("rollDice")[s])
                and not s:find("^%-?%d+$")
                and (hasLower(s) or s:find("^[%+%-xх]") ) then
                 keep[#keep + 1] = s
@@ -2492,12 +2484,12 @@ function M.rollTick(ws)
         if skill ~= nil and skill ~= "nil" then parts[#parts + 1] = skill end
         if check ~= nil and check ~= "nil" and check ~= skill then parts[#parts + 1] = check end
         local target = tonumber(d.TargetNumber)
-        if target ~= nil then parts[#parts + 1] = "нужно " .. target end
+        if target ~= nil then parts[#parts + 1] = T"need " .. target end
         local bonus = tonumber(d.MaxBonusValue)
         if bonus ~= nil and bonus > 0 then
-            parts[#parts + 1] = "можно добавить до " .. bonus
+            parts[#parts + 1] = T"can add up to " .. bonus
         end
-        parts[#parts + 1] = "бросок — кнопка Y"
+        parts[#parts + 1] = T"roll - button Y"
         -- What the bonus section says, on the pass that first reads the panel. After this it
         -- speaks on its own, whenever the player changes it.
         if M.rollBonusSaid ~= nil then parts[#parts + 1] = M.rollBonusSaid end
@@ -2509,12 +2501,12 @@ function M.rollTick(ws)
         local total = tonumber(d.FinalResult)
         local target = tonumber(d.TargetNumber)
         if rolled ~= nil then
-            local line = "выпало " .. rolled
-            if total ~= nil and total ~= rolled then line = line .. ", итог " .. total end
-            if target ~= nil then line = line .. " против " .. target end
+            local line = T"rolled " .. rolled
+            if total ~= nil and total ~= rolled then line = line .. T", total " .. total end
+            if target ~= nil then line = line .. T" against " .. target end
             parts[#parts + 1] = line
         end
-        parts[#parts + 1] = (d.Success == true) and "успех" or "провал"
+        parts[#parts + 1] = (d.Success == true) and T"success" or T"failure"
         if said ~= nil and said ~= "nil" and said ~= "" then parts[#parts + 1] = said end
     end
 
@@ -2601,12 +2593,13 @@ function M.tutorialTick(ws)
 
     local body = {}
     for i = 1, #parts do
-        -- "Общее обучение" is the category, and it is the same on every hint of this kind.
-        if parts[i] ~= "Общее обучение" and parts[i] ~= "Готово" then
+        -- The category ("General Tutorial") is the same on every hint of this kind, and the
+        -- last part is the dismiss button; both are recognised through their handles.
+        if not (Lang ~= nil and Lang.gset("tutorialNoise")[parts[i]]) then
             body[#body + 1] = parts[i]
         end
     end
-    local text = "Обучение. " .. table.concat(body, ". ") .. ". Закрыть — кнопка A"
+    local text = T"Tutorial. " .. table.concat(body, ". ") .. T". Close - button A"
     _P("[pad] tutorial: " .. text)
     say(text)
     return true
@@ -2770,7 +2763,7 @@ local function journalScan(widget)
 
         -- A quest's state, which follows its caption in the tree.
         if p.QuestIsInProgress ~= nil then
-            quests[#quests + 1] = { title = lastTitle or "Задание",
+            quests[#quests + 1] = { title = lastTitle or T"Quest",
                                     selected = p.IsSelected == true,
                                     inProgress = p.QuestIsInProgress == true,
                                     expanded = p.IsExpanded == true }
@@ -2905,44 +2898,44 @@ end
 -- DealDamage(4d6,Radiant)".
 
 local DAMAGE_RU = {
-    Bludgeoning = "дробящий", Piercing = "колющий", Slashing = "рубящий",
-    Acid = "кислотой", Cold = "холодом", Fire = "огнём", Force = "силовой",
-    Lightning = "молнией", Necrotic = "некротический", Poison = "ядом",
-    Psychic = "психический", Radiant = "излучением", Thunder = "звуковой",
+    Bludgeoning = T"bludgeoning", Piercing = T"piercing", Slashing = T"slashing",
+    Acid = T"acid", Cold = T"cold", Fire = T"fire", Force = T"force",
+    Lightning = T"lightning", Necrotic = T"necrotic", Poison = T"poison",
+    Psychic = T"psychic", Radiant = T"radiant", Thunder = T"thunder",
 }
 
 local ATTACK_RU = {
-    MeleeSpellAttack = "ближняя атака заклинанием",
-    RangedSpellAttack = "дальняя атака заклинанием",
-    MeleeWeaponAttack = "ближняя атака оружием",
-    RangedWeaponAttack = "дальняя атака оружием",
-    MeleeOffHandWeaponAttack = "атака второй рукой",
-    RangedOffHandWeaponAttack = "дальняя атака второй рукой",
-    MeleeUnarmedAttack = "безоружная атака",
-    Strength = "спасбросок Силы", Dexterity = "спасбросок Ловкости",
-    Constitution = "спасбросок Телосложения", Intelligence = "спасбросок Интеллекта",
-    Wisdom = "спасбросок Мудрости", Charisma = "спасбросок Харизмы",
+    MeleeSpellAttack = T"melee spell attack",
+    RangedSpellAttack = T"ranged spell attack",
+    MeleeWeaponAttack = T"melee weapon attack",
+    RangedWeaponAttack = T"ranged weapon attack",
+    MeleeOffHandWeaponAttack = T"off-hand attack",
+    RangedOffHandWeaponAttack = T"ranged off-hand attack",
+    MeleeUnarmedAttack = T"unarmed attack",
+    Strength = T"Strength saving throw", Dexterity = T"Dexterity saving throw",
+    Constitution = T"Constitution saving throw", Intelligence = T"Intelligence saving throw",
+    Wisdom = T"Wisdom saving throw", Charisma = T"Charisma saving throw",
 }
 
 local SCHOOL_RU = {
-    Abjuration = "ограждение", Conjuration = "вызов", Divination = "прорицание",
-    Enchantment = "очарование", Evocation = "воплощение", Illusion = "иллюзия",
-    Necromancy = "некромантия", Transmutation = "преобразование",
+    Abjuration = T"abjuration", Conjuration = T"conjuration", Divination = T"divination",
+    Enchantment = T"enchantment", Evocation = T"evocation", Illusion = T"illusion",
+    Necromancy = T"necromancy", Transmutation = T"transmutation",
 }
 
 local COST_RU = {
-    ActionPoint = "действие", BonusActionPoint = "бонусное действие",
-    ReactionActionPoint = "реакция", Movement = "движение",
+    ActionPoint = T"action", BonusActionPoint = T"bonus action",
+    ReactionActionPoint = T"reaction", Movement = T"movement",
     -- Named as charges, not as the thing they power: "Ярость, бонусное действие, ярость" is
     -- what the plain word gave, and it reads as a stutter rather than as a price.
-    WildShape = "заряд дикого облика", Rage = "заряд ярости",
-    SorceryPoint = "единица чародейства",
-    KiPoint = "ци", SuperiorityDie = "кость превосходства",
-    BardicInspiration = "вдохновение барда", ChannelDivinity = "божественный канал",
-    ChannelOath = "канал клятвы", LayOnHandsCharge = "наложение рук",
-    DeflectMissiles = "отражение снарядов", WarPriestActionPoint = "действие жреца войны",
-    ArcaneRecoveryPoint = "магическое восстановление",
-    NaturalRecoveryPoint = "природное восстановление",
+    WildShape = T"wild shape charge", Rage = T"rage charge",
+    SorceryPoint = T"sorcery point",
+    KiPoint = T"ki", SuperiorityDie = T"superiority die",
+    BardicInspiration = T"bardic inspiration", ChannelDivinity = T"channel divinity",
+    ChannelOath = T"channel oath", LayOnHandsCharge = T"lay on hands",
+    DeflectMissiles = T"deflect missiles", WarPriestActionPoint = T"war priest action",
+    ArcaneRecoveryPoint = T"arcane recovery",
+    NaturalRecoveryPoint = T"natural recovery",
 }
 
 --- The character whose wheel this is.
@@ -3005,56 +2998,77 @@ end
 -- the character's hand - and read out raw that came out as "урон MainMeleeWeapon/2
 -- MainWeaponDamageType", which is worse than saying less.
 local WEAPON_DMG = {
-    MainMeleeWeapon = "оружия ближнего боя",
-    OffhandMeleeWeapon = "оружия во второй руке",
-    MainRangedWeapon = "дальнобойного оружия",
-    OffhandRangedWeapon = "дальнобойного оружия во второй руке",
-    UnarmedDamage = "без оружия",
-    ThrownDamage = "брошенного предмета",
+    MainMeleeWeapon = T"melee weapon damage",
+    OffhandMeleeWeapon = T"off-hand weapon damage",
+    MainRangedWeapon = T"ranged weapon damage",
+    OffhandRangedWeapon = T"ranged off-hand weapon damage",
+    UnarmedDamage = T"unarmed damage",
+    ThrownDamage = T"thrown item damage",
+}
+
+-- Half of it is a sentence of its own rather than a prefix, because Russian puts the noun in
+-- another case behind "половина" and a translator handed "half " and "melee weapon damage"
+-- separately cannot write either of them correctly.
+local WEAPON_DMG_HALF = {
+    MainMeleeWeapon = T"half melee weapon damage",
+    OffhandMeleeWeapon = T"half off-hand weapon damage",
+    MainRangedWeapon = T"half ranged weapon damage",
+    OffhandRangedWeapon = T"half ranged off-hand weapon damage",
+    UnarmedDamage = T"half unarmed damage",
+    ThrownDamage = T"half thrown item damage",
 }
 
 --- "DealDamage(4d6,Radiant)" and the several of them a spell can carry.
 ---
---- Returns the whole phrase, "урон" included, because half weapon damage does not fit behind a
---- fixed prefix: "половина урона оружия ближнего боя" and "урон 4к6 излучением" are different
---- shapes, not one shape with a different tail.
+--- Returns the whole phrase, the word "damage" included, because half weapon damage does not
+--- fit behind a fixed prefix: "половина урона оружия ближнего боя" and "урон 4к6 излучением"
+--- are different shapes, not one shape with a different tail - so the two shapes are two
+--- sentences for a translator rather than a prefix glued onto a noun.
 local function damageWords(s)
     if type(s) ~= "string" or s == "" then return nil end
     local out = {}
-    for dice, kind in s:gmatch("DealDamage%(([^,%)]+)%s*,?%s*([^%)]*)%)") do
-        dice = dice:gsub("%s+", "")
+    for raw, kind in s:gmatch("DealDamage%(([^,%)]+)%s*,?%s*([^%)]*)%)") do
+        local dice = raw:gsub("%s+", "")
         local half = false
         local base = dice:match("^(.+)/2$")
         if base ~= nil then half, dice = true, base end
 
-        local what
+        local kw = DAMAGE_RU[kind]
+        local phrase
         -- Anything built out of digits and dice is a number, however many terms it has.
         -- The first version asked for exactly `NdM` or a plain number, and `3d4+3` - which
         -- is Magic Missile, and the shape of most damage in the game - matched neither, so it
         -- fell through to the branch for weapon symbols and came out as "урон оружия,
         -- силовой". Found on the level-up screen, where a spell is chosen on what it does.
         if dice:match("^%d") and dice:match("^[%dd%+%-]+$") then
-            what = dice:gsub("d", "к")
-            local kw = DAMAGE_RU[kind]
+            -- Russian writes 2к6 where English writes 2d6, and a screen reader saying "two
+            -- dee six" to a Russian player is a foreign word in the middle of our own
+            -- sentence.
+            local what = dice:gsub("d", (Lang ~= nil and Lang.dice()) or "d")
             if kw ~= nil then what = what .. " " .. kw end
+            phrase = string.format(half and T"half %s damage" or T"%s damage", what)
         else
             -- A symbol rather than a number. Named if it is one of the handful the engine
-            -- uses, and called plainly "оружия" if it is not - never spelled out.
-            what = WEAPON_DMG[dice] or "оружия"
-            local kw = DAMAGE_RU[kind]
-            if kw ~= nil then what = what .. ", " .. kw end
+            -- uses, and called plainly the weapon's if it is not - never spelled out.
+            phrase = (half and WEAPON_DMG_HALF[dice] or WEAPON_DMG[dice])
+                     or (half and T"half weapon damage" or T"weapon damage")
+            if kw ~= nil then phrase = phrase .. ", " .. kw end
         end
-        out[#out + 1] = (half and "половина урона " or "урон ") .. what
+        out[#out + 1] = phrase
     end
     if #out == 0 then return nil end
-    return table.concat(out, " и ")
+    return table.concat(out, T" and ")
 end
 M.damageWords = damageWords
 
 --- "ActionPoint:1;SpellSlotsGroup:1:1:1" - the action economy and the slot it burns.
+---
+--- Returns the phrase and whether it named a spell level, because the caller decides on that
+--- rather than by searching its own sentence for a word - which is a test that only ever
+--- worked in the language the word happened to be written in.
 local function costWords(s)
     if type(s) ~= "string" or s == "" then return nil end
-    local out = {}
+    local out, saidLevel = {}, false
     for part in s:gmatch("[^;]+") do
         local bits = {}
         for b in part:gmatch("[^:]+") do bits[#bits + 1] = b end
@@ -3062,14 +3076,19 @@ local function costWords(s)
         if kind == "SpellSlotsGroup" then
             -- The last number is the ring the slot comes from.
             local lvl = tonumber(bits[#bits])
-            out[#out + 1] = lvl and ("ячейка " .. lvl .. " круга") or "ячейка заклинания"
+            if lvl ~= nil then
+                out[#out + 1] = string.format(T"level %d slot", lvl)
+                saidLevel = true
+            else
+                out[#out + 1] = T"spell slot"
+            end
         elseif COST_RU[kind] ~= nil then
             local n = tonumber(bits[2]) or 1
             out[#out + 1] = n > 1 and (COST_RU[kind] .. " ×" .. n) or COST_RU[kind]
         end
     end
     if #out == 0 then return nil end
-    return table.concat(out, ", ")
+    return table.concat(out, ", "), saidLevel
 end
 M.costWords = costWords
 
@@ -3124,7 +3143,7 @@ local function durationWords(s)
     turns = tonumber(turns)
     if turns == nil or turns <= 0 then return nil end
     if turns >= 100 then return nil end          -- the engine's "until something else" numbers
-    return M.plural(turns, "ход")
+    return M.plural(turns, "turn")
 end
 M.durationWords = durationWords
 
@@ -3140,7 +3159,7 @@ function M.spellFacts(id)
     local f = function(name) return soft(function() return e[name] end) end
     local out = {}
 
-    local cost = costWords(str(f("UseCosts")))
+    local cost, costSaidLevel = costWords(str(f("UseCosts")))
     if cost ~= nil then out[#out + 1] = cost end
 
     -- `TargetRadius` is the reach on every spell measured so far; `Range` was 0 on the one that
@@ -3150,12 +3169,12 @@ function M.spellFacts(id)
     local range = tonumber(str(f("Range"))) or 0
     if range > reach then reach = range end
     if reach > 0 then
-        if reach <= 2 then out[#out + 1] = "вплотную"
-        else out[#out + 1] = "дальность " .. math.floor(reach + 0.5) .. " м" end
+        if reach <= 2 then out[#out + 1] = T"melee range"
+        else out[#out + 1] = T"range " .. math.floor(reach + 0.5) .. T" m" end
     end
 
     local area = tonumber(str(f("AreaRadius"))) or 0
-    if area > 0 then out[#out + 1] = "область " .. math.floor(area + 0.5) .. " м" end
+    if area > 0 then out[#out + 1] = T"area " .. math.floor(area + 0.5) .. T" m" end
 
     local how = ATTACK_RU[str(f("TooltipAttackSave"))]
     if how ~= nil then out[#out + 1] = how end
@@ -3166,22 +3185,23 @@ function M.spellFacts(id)
     local lvl = tonumber(str(f("Level")))
     local school = SCHOOL_RU[str(f("SpellSchool"))]
     if lvl ~= nil and lvl > 0 then
-        -- The cost has usually said the circle already ("ячейка 1 круга"), and on a screen
-        -- that is nothing but spells - which is what levelling up is - hearing "1 круга"
-        -- twice in every row is the kind of noise a listener stops parsing.
-        if cost ~= nil and cost:find("круга", 1, true) then
+        -- The cost has usually said the level already ("level 1 slot"), and on a screen that
+        -- is nothing but spells - which is what levelling up is - hearing "level 1" twice in
+        -- every row is the kind of noise a listener stops parsing.
+        if costSaidLevel then
             if school ~= nil then out[#out + 1] = school end
         else
-            out[#out + 1] = "заклинание " .. lvl .. " круга" .. (school and (", " .. school) or "")
+            out[#out + 1] = string.format(T"level %d spell", lvl) ..
+                            (school and (", " .. school) or "")
         end
     elseif school ~= nil then
-        out[#out + 1] = "заговор, " .. school
+        out[#out + 1] = T"cantrip, " .. school
     end
 
     local cd = str(f("Cooldown"))
-    if cd == "OncePerRest" then out[#out + 1] = "раз до отдыха"
-    elseif cd == "OncePerShortRest" then out[#out + 1] = "раз до короткого отдыха"
-    elseif cd == "OncePerTurn" then out[#out + 1] = "раз за ход" end
+    if cd == "OncePerRest" then out[#out + 1] = T"once per rest"
+    elseif cd == "OncePerShortRest" then out[#out + 1] = T"once per short rest"
+    elseif cd == "OncePerTurn" then out[#out + 1] = T"once per turn" end
 
     local dur = durationWords(str(f("TooltipStatusApply")))
     if dur ~= nil then out[#out + 1] = dur end
@@ -3269,16 +3289,16 @@ end
 -- The steps of levelling up, named by the Tag the markup keys every panel off. Used when the
 -- strip has a selection; the sub-selectors name themselves.
 local LEVELUP_TABS = {
-    levelup = "Новый уровень", class = "Класс", subclass = "Подкласс",
-    race = "Раса", deity = "Божество", draconic = "Драконья кровь",
-    draconicDragonborn = "Драконья кровь", skills = "Навыки",
-    expertise = "Компетентность", spellreplace = "Замена заклинания",
-    feat = "Черта", featdetails = "Черта", spellprep = "Подготовка заклинаний",
+    levelup = T"New level", class = T"Class", subclass = T"Subclass",
+    race = T"Race", deity = T"Deity", draconic = T"Draconic ancestry",
+    draconicDragonborn = T"Draconic ancestry", skills = T"Skills",
+    expertise = T"Expertise", spellreplace = T"Spell replacement",
+    feat = T"Feat", featdetails = T"Feat", spellprep = T"Spell preparation",
 }
 
 local ABILITY_RU = {
-    Strength = "Сила", Dexterity = "Ловкость", Constitution = "Выносливость",
-    Intelligence = "Интеллект", Wisdom = "Мудрость", Charisma = "Харизма",
+    Strength = T"Strength", Dexterity = T"Dexterity", Constitution = T"Constitution",
+    Intelligence = T"Intelligence", Wisdom = T"Wisdom", Charisma = T"Charisma",
 }
 
 M.LEVELUP_SCREENS = {
@@ -3431,19 +3451,19 @@ local function spellRefLine(rec, short)
     if type(spell) ~= "userdata" then
         -- An empty slot in the chosen row. `Additions` is a fixed-length list of places, so
         -- this is not a missing spell but a choice not yet made, and saying so is the point.
-        return "пусто"
+        return T"empty"
     end
     local sp = soft(function() return spell:GetAllProperties() end)
     if type(sp) ~= "table" then return nil end
-    if sp.IsEmpty == true then return "пусто" end
+    if sp.IsEmpty == true then return T"empty" end
 
     local handle = str(sp.Name)
     local name = loca(handle)
     if type(name) ~= "string" or name == "" or name:find("^h%x") then name = nil end
     local parts = {}
     if name ~= nil then parts[#parts + 1] = name end
-    if rec.Selected == true then parts[#parts + 1] = "выбрано" end
-    if rec.NotAvailable == true then parts[#parts + 1] = "недоступно" end
+    if rec.Selected == true then parts[#parts + 1] = T"chosen" end
+    if rec.NotAvailable == true then parts[#parts + 1] = T"unavailable" end
     if short then
         if #parts == 0 then return nil end
         return table.concat(parts, ", ")
@@ -3460,9 +3480,10 @@ local function spellRefLine(rec, short)
         local lvl = tonumber(str(sp.Level))
         local school = SCHOOL_RU[str(sp.SpellSchool)]
         if lvl ~= nil and lvl > 0 then
-            parts[#parts + 1] = "заклинание " .. lvl .. " круга" .. (school and (", " .. school) or "")
+            parts[#parts + 1] = string.format(T"level %d spell", lvl) ..
+                                (school and (", " .. school) or "")
         elseif school ~= nil then
-            parts[#parts + 1] = "заговор, " .. school
+            parts[#parts + 1] = T"cantrip, " .. school
         end
     end
     if #parts == 0 then return nil end
@@ -3512,10 +3533,10 @@ local function recordLine(rec, short)
         if v ~= nil then parts[#parts + 1] = tostring(math.floor(v + 0.5)) end
         local mod = tonumber(str(rec.Modifier))
         if mod ~= nil then
-            parts[#parts + 1] = "модификатор " .. (mod >= 0 and "+" or "") .. tostring(mod)
+            parts[#parts + 1] = T"modifier " .. (mod >= 0 and "+" or "") .. tostring(mod)
         end
-        if rec.CanIncrease == true then parts[#parts + 1] = "можно повысить" end
-        if rec.CanDecrease == true then parts[#parts + 1] = "можно понизить" end
+        if rec.CanIncrease == true then parts[#parts + 1] = T"can be raised" end
+        if rec.CanDecrease == true then parts[#parts + 1] = T"can be lowered" end
         return table.concat(parts, ", ")
     end
 
@@ -3537,10 +3558,10 @@ local function recordLine(rec, short)
     -- Whether it is already taken, and whether it can be. Three different models spell the
     -- same two facts three different ways, so all of them are looked at.
     if rec.Selected == true or rec.IsSelected == true or rec.Value == 1.0 then
-        parts[#parts + 1] = "выбрано"
+        parts[#parts + 1] = T"chosen"
     end
     if rec.Enabled == false or rec.NotAvailable == true or rec.IsEnabled == false then
-        parts[#parts + 1] = "недоступно"
+        parts[#parts + 1] = T"unavailable"
     end
     local ab = ABILITY_RU[str(rec.Ability)]
     if ab ~= nil then parts[#parts + 1] = ab end
@@ -3577,17 +3598,17 @@ M.recordLine = recordLine
 --- `Object`, and a bag belongs to whoever the `Expander` above it names.
 local function sectionOf(rec, chain)
     if type(rec) ~= "table" then return nil end
-    if rec.SlotType ~= nil then return "Снаряжение" end
+    if rec.SlotType ~= nil then return T"Equipment" end
     if rec.Object == nil then return nil end
     for i = #chain, 1, -1 do
         local cls = select(1, A.splitToString(A.realType(chain[i])))
         if cls:find("Expander", 1, true) then
             local who = titleUnder(chain[i])
-            if who ~= nil then return "Сумка: " .. who end
+            if who ~= nil then return T"Bag: " .. who end
             break
         end
     end
-    return "Сумка"
+    return T"Bag"
 end
 
 function M.levelUpFocus(widgetNode, focused)
@@ -3605,11 +3626,11 @@ function M.levelUpFocus(widgetNode, focused)
     -- The chosen row and the row of what is on offer read alike and mean opposite things:
     -- one is what the character will have, the other is what they might. The panel names both
     -- ("Выбрано", "Доступно") and the cursor crossing between them is silent otherwise.
-    if list == "chosenSpells" and line ~= "пусто" and not line:find("выбрано", 1, true) then
-        line = line .. ", выбрано"
+    if list == "chosenSpells" and line ~= T"empty" and not line:find(T"chosen", 1, true) then
+        line = line .. T", chosen"
     end
     if pos ~= nil and total ~= nil and total > 1 then
-        line = line .. ", " .. pos .. " из " .. total
+        line = line .. ", " .. pos .. T" of " .. total
     end
     return line, tostring(list) .. "|" .. tostring(pos) .. "|" .. line, section
 end
@@ -3648,9 +3669,9 @@ function M.levelUpStep(widgetNode)
         end
     end
     if slots > 0 then
-        parts[#parts + 1] = "выбрано " .. filled .. " из " .. slots
+        parts[#parts + 1] = T"chosen " .. filled .. T" of " .. slots
     elseif rec.IsComplete == false then
-        parts[#parts + 1] = "нужно выбрать"
+        parts[#parts + 1] = T"a choice is needed"
     end
     if #parts == 0 then return nil end
     return table.concat(parts, ", "), (title or "") .. "|" .. filled .. "/" .. slots
@@ -3687,7 +3708,7 @@ function M.levelUpTick(widget)
             local was = M.lvlDone
             M.lvlDone = done
             if done and was ~= nil then
-                pend("Все выборы сделаны. Можно завершить повышение уровня")
+                pend(T"Every choice is made. The level-up can be finished")
                 M.lvlStepKey = "<done>"
                 return true
             end
@@ -3745,7 +3766,7 @@ function M.levelUpDetails(node)
     -- An empty slot has nothing of its own to say, and "пусто" is what the player already
     -- heard. What they are asking for there is what the slot is waiting to be filled with,
     -- which is the step's own question.
-    if #out == 1 and out[1] == "пусто" then
+    if #out == 1 and out[1] == T"empty" then
         local step = M.levelUpStep(node)
         if step ~= nil then out[#out + 1] = step end
         local marks = landmarks(node, 400)
@@ -3762,13 +3783,13 @@ end
 -- own sections in text ("Выбрано", "Доступно"), but those are separate nodes several levels
 -- from the list they belong to, so a list read on its own would arrive unlabelled.
 local LEVELUP_LISTS = {
-    chosenSpells = "Выбрано", availableSpells = "Доступно",
-    availableSpellsByLevel = "Доступно", classPassiveActions = "Действия",
-    classPassiveCantrips = "Заговоры", classPassiveSpells = "Заклинания",
-    classProgressionActions = "Действия", classProgressionCantrips = "Заговоры",
-    classProgressionSpells = "Заклинания", subclassPassiveActions = "Действия",
-    subclassPassiveCantrips = "Заговоры", subclassPassiveSpells = "Заклинания",
-    featureSpells = "Умения", subRaceFeatureSpells = "Умения",
+    chosenSpells = T"Chosen", availableSpells = T"Available",
+    availableSpellsByLevel = T"Available", classPassiveActions = T"Actions",
+    classPassiveCantrips = T"Cantrips", classPassiveSpells = T"Spells",
+    classProgressionActions = T"Actions", classProgressionCantrips = T"Cantrips",
+    classProgressionSpells = T"Spells", subclassPassiveActions = T"Actions",
+    subclassPassiveCantrips = T"Cantrips", subclassPassiveSpells = T"Spells",
+    featureSpells = T"Features", subRaceFeatureSpells = T"Features",
 }
 
 --- The whole screen as lines to walk with the review cursor.
@@ -3863,7 +3884,7 @@ function M.levelUpTodo(widgetNode)
     local from = tonumber(str(rec.CurrentCharacterLevel))
     local to = tonumber(str(rec.AvailableCharacterLevel))
     if from ~= nil and to ~= nil and to > from then
-        out[#out + 1] = "Уровень " .. from .. ", повышение до " .. to
+        out[#out + 1] = T"Level " .. from .. T", raising to " .. to
     end
 
     -- The step in play first: it is the one thing on the list the player can act on right now.
@@ -3876,24 +3897,24 @@ function M.levelUpTodo(widgetNode)
         if type(p) ~= "table" then return end
         local max = tonumber(str(p.MaxSelectedSkillCount)) or 0
         local sel = tonumber(str(p.SelectedSkillCount)) or 0
-        if max > 0 then out[#out + 1] = what .. ": " .. sel .. " из " .. max end
+        if max > 0 then out[#out + 1] = what .. ": " .. sel .. T" of " .. max end
     end
     if type(rec.AllSkills) == "userdata" then
         local all = soft(function() return rec.AllSkills:GetAllProperties() end)
         if type(all) == "table" then
-            group(all.ClassProficientSkills, "Навыки класса")
-            group(all.RaceProficientSkills, "Навыки расы")
-            group(all.ExpertiseSkills, "Компетентность")
+            group(all.ClassProficientSkills, T"Class skills")
+            group(all.RaceProficientSkills, T"Race skills")
+            group(all.ExpertiseSkills, T"Expertise")
         end
     end
 
     local unused = tonumber(str(rec.UnusedAbilityPoints))
     if unused ~= nil and unused > 0 then
-        out[#out + 1] = "Нераспределённых очков характеристик: " .. unused
+        out[#out + 1] = T"Unspent ability points: " .. unused
     end
-    if rec.CanSelectFeat == true then out[#out + 1] = "Можно выбрать черту" end
-    if rec.IsLevelUpComplete == true then out[#out + 1] = "Все выборы сделаны"
-    elseif rec.IsLevelUpComplete == false then out[#out + 1] = "Выбор ещё не завершён" end
+    if rec.CanSelectFeat == true then out[#out + 1] = T"A feat can be chosen" end
+    if rec.IsLevelUpComplete == true then out[#out + 1] = T"Every choice is made"
+    elseif rec.IsLevelUpComplete == false then out[#out + 1] = T"The choices are not finished" end
 
     if #out == 0 then return nil end
     return out
@@ -4009,9 +4030,9 @@ function M.bookTick(ws)
     M.cursor = start
     -- Quoted rather than after a colon: half the titles in this game have a colon of their
     -- own, and «Книга: Талис: прорицание без магии» is a stutter a listener has to unpick.
-    local head = (title ~= nil) and ("Книга «" .. title .. "»") or "Записка"
+    local head = (title ~= nil) and (T"Book: " .. title) or T"Note"
     local rest = #lines - start
-    if rest > 0 then head = head .. ", ещё " .. M.plural(rest, "абзац") end
+    if rest > 0 then head = head .. string.format(T", %s more", M.plural(rest, "paragraph")) end
     _P("[pad] book: " .. tostring(title) .. ", " .. #lines .. " lines")
     say(head .. ". " .. tostring(lines[start]))
     return true
@@ -4064,8 +4085,8 @@ M.RECORD_SCREENS = {
 }
 
 local RARITY_RU = {
-    Uncommon = "необычный", Rare = "редкий", VeryRare = "очень редкий",
-    Legendary = "легендарный", Divine = "божественный", Unique = "уникальный",
+    Uncommon = T"uncommon", Rare = T"rare", VeryRare = T"very rare",
+    Legendary = T"legendary", Divine = T"divine", Unique = T"unique",
 }
 
 -- What kind of thing an item is, and where that answer comes from.
@@ -4078,31 +4099,31 @@ local RARITY_RU = {
 --
 -- Measured over 41 distinct items in a real party's bags.
 local SLOTKIND_RU = {
-    MeleeMainHand = "оружие", MeleeOffHand = "оружие",
-    RangedMainHand = "дальнобойное оружие", RangedOffHand = "дальнобойное оружие",
-    Helmet = "шлем", Breast = "нагрудник", Cloak = "плащ", Gloves = "перчатки",
-    Boots = "сапоги", Amulet = "амулет", Ring = "кольцо", Ring2 = "кольцо",
-    Underwear = "бельё", MusicalInstrument = "инструмент",
-    VanityBody = "облик", VanityBoots = "облик",
+    MeleeMainHand = T"weapon", MeleeOffHand = T"weapon",
+    RangedMainHand = T"ranged weapon", RangedOffHand = T"ranged weapon",
+    Helmet = T"helmet", Breast = T"chest", Cloak = T"cloak", Gloves = T"gloves",
+    Boots = T"boots", Amulet = T"amulet", Ring = T"ring", Ring2 = T"ring",
+    Underwear = T"underwear", MusicalInstrument = T"instrument",
+    VanityBody = T"vanity", VanityBoots = T"vanity",
 }
 
 local ITEMKIND_RU = {
-    Container = "контейнер", Tool = "инструмент", Book = "книга", Shield = "щит",
-    Consumable = "расходник",
+    Container = T"container", Tool = T"tool", Book = T"book", Shield = T"shield",
+    Consumable = T"consumable",
 }
 
 -- The slots of the paperdoll, as the model names them. `SlotType` is the same word in the
 -- character's `Equipment` map and on the control the cursor lands on, so one table serves
 -- both the "what am I wearing" list and the row under the cursor.
 local SLOT_RU = {
-    Helmet = "шлем", Breast = "нагрудник", Cloak = "плащ", Gloves = "перчатки",
-    Boots = "сапоги", Amulet = "амулет", Ring = "кольцо", Ring2 = "второе кольцо",
-    Underwear = "бельё", MeleeMainHand = "ближний бой, основная рука",
-    MeleeOffHand = "ближний бой, вторая рука",
-    RangedMainHand = "дальний бой, основная рука",
-    RangedOffHand = "дальний бой, вторая рука",
-    LightSource = "источник света", MusicalInstrument = "инструмент",
-    VanityBody = "облик, одежда", VanityBoots = "облик, обувь",
+    Helmet = T"helmet", Breast = T"chest", Cloak = T"cloak", Gloves = T"gloves",
+    Boots = T"boots", Amulet = T"amulet", Ring = T"ring", Ring2 = T"second ring",
+    Underwear = T"underwear", MeleeMainHand = T"melee, main hand",
+    MeleeOffHand = T"melee, off hand",
+    RangedMainHand = T"ranged, main hand",
+    RangedOffHand = T"ranged, off hand",
+    LightSource = T"light source", MusicalInstrument = T"instrument",
+    VanityBody = T"vanity clothes", VanityBoots = T"vanity boots",
 }
 
 --- A number said the way a listener takes it: one decimal, and a comma for the point.
@@ -4131,26 +4152,26 @@ local function itemLine(obj, short, noKind)
     local count = tonumber(str(obj.Count))
     if count ~= nil and count > 1 then parts[#parts + 1] = "×" .. math.floor(count) end
     if str(obj.Equipped) ~= "NotEquipped" and str(obj.Equipped) ~= "nil" then
-        parts[#parts + 1] = "надето"
+        parts[#parts + 1] = T"equipped"
     end
-    if obj.IsNew == true then parts[#parts + 1] = "новое" end
-    if obj.IsStolen == true then parts[#parts + 1] = "краденое" end
+    if obj.IsNew == true then parts[#parts + 1] = T"new" end
+    if obj.IsStolen == true then parts[#parts + 1] = T"stolen" end
     local rare = RARITY_RU[str(obj.Rarity)]
     if rare ~= nil then parts[#parts + 1] = rare end
-    if obj.IsStoryItem == true then parts[#parts + 1] = "сюжетный предмет" end
+    if obj.IsStoryItem == true then parts[#parts + 1] = T"story item" end
     -- A shield is a shield before it is a thing worn in the off hand, so ItemType wins where
     -- it is one of the certain ones; otherwise the slot says it, and where neither does,
     -- nothing is said.
     local kind = ITEMKIND_RU[str(obj.ItemType)] or SLOTKIND_RU[str(obj.EquipmentSlotType)]
     if str(obj.ItemType) == "Consumable" and str(obj.UseType) == "Potion" then
-        kind = "зелье"
+        kind = T"potion"
     end
     if kind ~= nil and not noKind then parts[#parts + 1] = kind end
     -- A bag with something unread in it is worth opening, and nothing else says so.
-    if obj.NewItemsInside == true then parts[#parts + 1] = "внутри новое" end
+    if obj.NewItemsInside == true then parts[#parts + 1] = T"new inside" end
     local supplies = tonumber(str(obj.CampSupplies))
     if supplies ~= nil and supplies > 0 then
-        parts[#parts + 1] = "припасы " .. math.floor(supplies)
+        parts[#parts + 1] = T"supplies " .. math.floor(supplies)
     end
     if short then return table.concat(parts, ", ") end
 
@@ -4167,22 +4188,22 @@ local function itemLine(obj, short, noKind)
             if type(st.Weight) == "userdata" then
                 local w = soft(function() return st.Weight:GetAllProperties() end)
                 local wv = w and num1(w.Value) or nil
-                if wv ~= nil and wv ~= "0" then parts[#parts + 1] = "вес " .. wv end
+                if wv ~= nil and wv ~= "0" then parts[#parts + 1] = T"weight " .. wv end
             end
             if type(st.Range) == "userdata" then
                 local r = soft(function() return st.Range:GetAllProperties() end)
                 local rv = r and tonumber(str(r.Value)) or nil
                 if rv ~= nil and rv > 0 then
-                    parts[#parts + 1] = "дальность " .. math.floor(rv + 0.5) .. " м"
+                    parts[#parts + 1] = T"range " .. math.floor(rv + 0.5) .. T" m"
                 end
             end
         end
     end
-    if ac ~= nil and ac > 0 then parts[#parts + 1] = "класс брони " .. math.floor(ac + 0.5) end
-    if obj.IsMartial == true then parts[#parts + 1] = "воинское" end
-    if obj.IsVersatile == true then parts[#parts + 1] = "универсальное" end
+    if ac ~= nil and ac > 0 then parts[#parts + 1] = T"armour class " .. math.floor(ac + 0.5) end
+    if obj.IsMartial == true then parts[#parts + 1] = T"martial" end
+    if obj.IsVersatile == true then parts[#parts + 1] = T"versatile" end
     local gold = tonumber(str(obj.Gold))
-    if gold ~= nil and gold > 0 then parts[#parts + 1] = "цена " .. math.floor(gold) end
+    if gold ~= nil and gold > 0 then parts[#parts + 1] = T"price " .. math.floor(gold) end
 
     local why = unmarkup(loca(str(obj.Description)))
     if type(why) == "string" and why ~= "" and not why:find("^h%x") and not why:find("^ls::") then
@@ -4218,7 +4239,7 @@ local function slotLine(rec, short, key)
     local what = item and itemLine(item, short, slot ~= nil) or nil
     if what == nil then
         if slot == nil then return nil end
-        return slot .. ", пусто"
+        return slot .. T", empty"
     end
     if slot == nil then return what end
     return slot .. ", " .. what
@@ -4316,22 +4337,22 @@ function M.characterLine(rec)
         if hp ~= nil then
             local v, m = tonumber(str(hp.Value)), tonumber(str(hp.Max))
             if v ~= nil and m ~= nil and m > 0 then
-                parts[#parts + 1] = "здоровье " .. math.floor(v) .. " из " .. math.floor(m)
+                parts[#parts + 1] = T"health " .. math.floor(v) .. T" of " .. math.floor(m)
             end
         end
         local ac = itemProps(st, "ArmorClass")
         local av = ac and tonumber(str(ac.Value)) or nil
-        if av ~= nil and av > 0 then parts[#parts + 1] = "класс брони " .. math.floor(av) end
+        if av ~= nil and av > 0 then parts[#parts + 1] = T"armour class " .. math.floor(av) end
     end
     local enc = itemProps(rec, "EncumbranceStats")
     if enc ~= nil then
         local w, max = num1(enc.CurrentWeight), num1(enc.WeightMaximum)
-        if w ~= nil and max ~= nil then parts[#parts + 1] = "вес " .. w .. " из " .. max end
-        if enc.IsOverEncumbared == true then parts[#parts + 1] = "перегружен" end
+        if w ~= nil and max ~= nil then parts[#parts + 1] = T"weight " .. w .. T" of " .. max end
+        if enc.IsOverEncumbared == true then parts[#parts + 1] = T"overloaded" end
     end
     local inv = itemProps(rec, "Inventory")
     local gold = inv and tonumber(str(inv.Gold)) or nil
-    if gold ~= nil and gold > 0 then parts[#parts + 1] = "золото " .. math.floor(gold) end
+    if gold ~= nil and gold > 0 then parts[#parts + 1] = T"gold " .. math.floor(gold) end
     if #parts == 0 then return nil end
     return table.concat(parts, ", ")
 end
@@ -4461,8 +4482,8 @@ function M.characterSummary(node)
     local who = M.characterLine(sc)
     if who ~= nil then out[#out + 1] = who end
     local st = M.statusLines(str(sc.EntityUUID))
-    if st ~= nil then out[#out + 1] = "Состояния: " .. table.concat(st, ", ")
-    else out[#out + 1] = "Состояний нет" end
+    if st ~= nil then out[#out + 1] = T"Conditions: " .. table.concat(st, ", ")
+    else out[#out + 1] = T"No conditions" end
     local eq = M.equipLines(node)
     if eq ~= nil then for i = 1, #eq do out[#out + 1] = eq[i] end end
     if #out == 0 then return nil end
@@ -4492,7 +4513,7 @@ function M.panelLines(node)
     if strip ~= nil then
         local items, sel = tabItems(strip)
         if sel ~= nil and #items > 1 then
-            add(items[sel].text .. ", " .. sel .. " из " .. #items)
+            add(items[sel].text .. ", " .. sel .. T" of " .. #items)
         end
     end
 
@@ -4508,12 +4529,12 @@ function M.panelLines(node)
         local who = M.characterLine(sc)
         if who ~= nil then add(who) end
         local st = M.statusLines(str(sc.EntityUUID))
-        if st ~= nil then add("Состояния: " .. table.concat(st, ", ")) end
+        if st ~= nil then add(T"Conditions: " .. table.concat(st, ", ")) end
     end
 
     local eq = M.equipLines(node)
     if eq ~= nil then
-        add("Снаряжение: " .. #eq)
+        add(T"Equipment: " .. #eq)
         for i = 1, #eq do add(eq[i]) end
     end
 
@@ -4545,8 +4566,8 @@ function M.panelLines(node)
                 end
             end
             if #rows > 0 then
-                local who = owner or "Сумка"
-                add(who .. ": " .. M.plural(#rows, "предмет"), who .. "|head")
+                local who = owner or T"Bag"
+                add(who .. ": " .. M.plural(#rows, "item"), who .. "|head")
                 for i = 1, #rows do add(rows[i], who .. "|" .. i) end
             end
             return
@@ -4594,12 +4615,12 @@ end
 -- returns to -1 the moment the stick is let go. So the announcement follows the index, and
 -- the resting state says nothing rather than repeating itself.
 
-M.RADIAL_WIDGETS = { ActionRadials = "Круговое меню", shortcutsMenu = "Быстрое меню" }
+M.RADIAL_WIDGETS = { ActionRadials = T"Radial menu", shortcutsMenu = T"Quick menu" }
 
 -- The action economy, as the model spells it.
 local RADIAL_COST = {
-    Action = "действие", BonusAction = "бонусное действие",
-    Movement = "движение", ReactionActionPoint = "реакция",
+    Action = T"action", BonusAction = T"bonus action",
+    Movement = T"movement", ReactionActionPoint = T"reaction",
 }
 
 --- The wheel the stick is turning.
@@ -4700,7 +4721,7 @@ local function radialSlot(item)
 
     -- Why it cannot be used, before what it does: in a fight that is the difference between a
     -- slot worth hearing out and one to move past.
-    if rec.CanUse == false then parts[#parts + 1] = "недоступно" end
+    if rec.CanUse == false then parts[#parts + 1] = T"unavailable" end
 
     -- What it does. The facts already carry the cost, so the wheel's own one-word version is
     -- only used when there is no stats entry behind the slot.
@@ -4713,7 +4734,7 @@ local function radialSlot(item)
         local passive = str(content.PassiveName)
         if passive ~= "" and passive ~= "nil" then
             id = passive
-            facts = "пассивное умение"
+            facts = T"passive feature"
         end
     end
     if facts ~= nil then
@@ -4724,7 +4745,7 @@ local function radialSlot(item)
     end
 
     if type(rec.Count) == "number" and rec.Count > 1 then
-        parts[#parts + 1] = rec.Count .. " шт."
+        parts[#parts + 1] = rec.Count .. T" pcs"
     end
     if #parts == 0 then return nil end
     return table.concat(parts, ", "), rec, id
@@ -4823,7 +4844,7 @@ function M.radialTick(ws)
         local parts = { M.RADIAL_WIDGETS[name] }
         -- No page number. See findRadial: the number that used to be said here counted 384
         -- controls the player has no way to be on.
-        if st.count > 0 then parts[#parts + 1] = M.plural(st.count, "пункт") end
+        if st.count > 0 then parts[#parts + 1] = M.plural(st.count, "entry") end
         pend(table.concat(parts, ", "))
     end
 
@@ -4837,7 +4858,7 @@ function M.radialTick(ws)
     if key ~= M.radialKey then
         M.radialKey = key
         local line = st.text
-        if st.count > 1 then line = line .. ", " .. st.index .. " из " .. st.count end
+        if st.count > 1 then line = line .. ", " .. st.index .. T" of " .. st.count end
         _P("[pad] radial -> " .. line)
         pend(line)
     end
@@ -5109,7 +5130,7 @@ function M.slotTick(ws)
     end
     -- A slot past the end of the contents is an empty square, and saying so keeps the d-pad
     -- audible: silence at the edge of a grid is indistinguishable from a layer that stopped.
-    label = label or st.text or "пусто"
+    label = label or st.text or T"empty"
 
     -- Kept for calibration, not for the player. Whether the widget's slot index really lines up
     -- with the order the ECS hands the inventory back in is a claim about a grid nobody here can
@@ -5143,13 +5164,13 @@ function M.slotTick(ws)
 
     -- Taken is said whatever else happened, including on the pass that opened the panel: it is
     -- the one thing here the player cannot find out any other way.
-    if took ~= nil then pend("Взято: " .. took) end
+    if took ~= nil then pend(T"Taken: " .. took) end
     -- The pass that opens the panel says the panel, not the slot: the title and the line count
     -- are what the player needs first, and the selection has not moved yet. Recorded silently
     -- so the first press of the d-pad is heard as a change.
     if not first and label ~= nil then
         local line = label
-        if st.count > 1 then line = line .. ", " .. st.index .. " из " .. st.count end
+        if st.count > 1 then line = line .. ", " .. st.index .. T" of " .. st.count end
         pend(line)
     end
     return flush()
@@ -5280,10 +5301,14 @@ local DIALOGUE_COMBINED = { TextBodyContainer = true }
 -- Dropped from the **line** only, and never from the answers - "Продолжить." is a legitimate
 -- answer, the one that carries a conversation forward, so putting it in `DIALOGUE_NOISE` would
 -- blank out the option the player is being asked to choose.
-local DIALOGUE_BUTTON = {
-    ["Продолжить"] = true, ["Пропустить"] = true, ["Выбрать"] = true,
-    ["История диалогов"] = true, ["Перестать слушать"] = true, ["Далее"] = true,
-}
+--
+-- The captions themselves come from a11y-lang, which resolves the game's own handles for
+-- them: written down in one language they matched in one language, and on an English game
+-- every line ended in "Continue" again.
+local function isDialogueButton(s)
+    if Lang == nil then return false end
+    return Lang.gset("dialogueButtons")[s] == true
+end
 
 local function dialogueNoise(s)
     if DIALOGUE_NOISE[s] then return true end
@@ -5464,7 +5489,7 @@ function M.dialogue()
         local spoken = {}
         for i = 1, #keep do
             local bare = keep[i]:gsub("^%s+", ""):gsub("[%s%.]+$", "")
-            if not DIALOGUE_BUTTON[bare] then spoken[#spoken + 1] = keep[i] end
+            if not isDialogueButton(bare) then spoken[#spoken + 1] = keep[i] end
         end
         out.line = table.concat(spoken, " ")
     end
@@ -5496,7 +5521,7 @@ function M.dialogueTick()
             M.inDialogue = false
             M.lastLine, M.lastAnswer, M.answerSet = nil, nil, nil
             _P("[pad] dialogue ended")
-            say("Диалог закончен")
+            say(T"Dialogue over")
         end
         return false
     end
@@ -5551,7 +5576,7 @@ function M.dialogueTick()
         M.lastAnswer = here
         M.cursor = d.selected
         local text = d.answers[d.selected].text
-        local where = #answerSet > 1 and (d.selected .. " из " .. #answerSet) or tostring(d.selected)
+        local where = #answerSet > 1 and (d.selected .. T" of " .. #answerSet) or tostring(d.selected)
         _P("[pad] answer " .. where .. ": " .. text)
         say(where .. ". " .. text)
     end
@@ -5570,15 +5595,29 @@ end
 -- screen itself binds to: set the selection on that list and the game applies the value
 -- through its own binding.
 
-M.SCHEME_ROW = "Режим ввода"
-M.SCHEME_WANTED = "Контроллер"
+-- The row and the value are found through the game's own localisation handles rather than by
+-- their Russian captions, which is what they were until 2026-08-07. On any copy of the game
+-- not in Russian the row was simply never found, `setInputScheme` returned "row not found",
+-- and the one thing that puts the keyboard back was silently dead - on exactly the copies a
+-- first international test would run on.
+--
+-- Keyed by ASCII because the console input buffer is ANSI and a non-Latin argument arrives as
+-- question marks (§9 rule 3).
+M.SCHEME_KEYS = { auto = "schemeAuto", keyboard = "schemeKeyboard",
+                  controller = "schemeController" }
 
--- Keyed by ASCII because the console input buffer is ANSI and a Russian argument arrives as
--- question marks (§9 rule 3). The values live here, in a file read as UTF-8.
-M.SCHEMES = { auto = "Авто", keyboard = "Клавиатура", controller = "Контроллер" }
+function M.schemeRow()
+    return (Lang ~= nil and Lang.g("inputModeRow")) or "Input Mode"
+end
+
+function M.schemeWanted()
+    return (Lang ~= nil and Lang.g("schemeController")) or "Controller"
+end
 
 function M.scheme(key)
-    return M.setInputScheme(M.SCHEMES[key] or M.SCHEME_WANTED)
+    local want = M.SCHEME_KEYS[key]
+    want = (want ~= nil and Lang ~= nil and Lang.g(want)) or M.schemeWanted()
+    return M.setInputScheme(want)
 end
 
 --- Find a row of the open screen by caption, and the value list inside it.
@@ -5626,8 +5665,8 @@ end
 --- nodes, but whether a dependency property accepts a write - and whether the game's binding
 --- notices - is exactly the kind of thing that returns ok and does nothing (§С1).
 function M.setInputScheme(wanted)
-    wanted = wanted or M.SCHEME_WANTED
-    local row, err = M.findRow(M.SCHEME_ROW)
+    wanted = wanted or M.schemeWanted()
+    local row, err = M.findRow(M.schemeRow())
     if row == nil then
         _P("[pad] setInputScheme: " .. tostring(err))
         return nil, err
@@ -5671,8 +5710,8 @@ end
 -- What a control is, said out loud. Larian's class names carry the role, so the type comes
 -- for free from ToString() - and for the ones that hold a value, the value is a property.
 local KIND = {
-    LSComboBox = "список", LSCheckBox = "флажок", LSRadioButton = "переключатель",
-    LSSlider = "ползунок", LSTextBox = "поле ввода", LSListBoxItem = nil,
+    LSComboBox = T"list", LSCheckBox = T"checkbox", LSRadioButton = T"radio button",
+    LSSlider = T"slider", LSTextBox = T"text box", LSListBoxItem = nil,
     LSButton = nil, LSMenuButton = nil,
 }
 
@@ -5702,8 +5741,8 @@ local function expanderText(o, p)
         local qcls = select(1, A.splitToString(A.realType(q)))
         if qcls:find("Expander", 1, true) then
             local qp = props(q)
-            local name = titleUnder(q) or "Прохождение"
-            local state = (qp.IsExpanded == true) and "развёрнуто" or "свёрнуто"
+            local name = titleUnder(q) or T"Playthrough"
+            local state = (qp.IsExpanded == true) and T"expanded" or T"collapsed"
 
             -- The same control, a different thing entirely. A party member's bag on the
             -- character panel is an Expander with an ExpanderButton header, exactly like a
@@ -5711,7 +5750,7 @@ local function expanderText(o, p)
             -- «Гейл, группа сохранений, развёрнуто, 1 из 3». Here the second half of the line
             -- is not what kind of control this is but what the bag holds and what it weighs.
             if M.CHARACTER_PANELS[str(M.lastScreen)] then
-                local parts = { name, "инвентарь", state }
+                local parts = { name, T"inventory", state }
                 local rec = dataBehind(o)
                 local who = (type(rec) == "table") and M.characterLine(rec) or nil
                 if who ~= nil then parts[#parts + 1] = who end
@@ -5741,9 +5780,9 @@ local function expanderText(o, p)
                     n = n + 1
                     if tostring(ch[k]) == tostring(holder) then idx = n end
                 end
-                if idx ~= nil and n > 1 then where = ", " .. idx .. " из " .. n end
+                if idx ~= nil and n > 1 then where = ", " .. idx .. T" of " .. n end
             end
-            return name .. ", группа сохранений, " .. state .. where
+            return name .. T", save group, " .. state .. where
         end
     end
     return nil
@@ -5780,7 +5819,7 @@ local function focusText(o)
 
     local word = kindOf(cls)
     local value = nil
-    if p.IsChecked ~= nil then value = (p.IsChecked == true) and "включено" or "выключено"
+    if p.IsChecked ~= nil then value = (p.IsChecked == true) and T"on" or T"off"
     elseif type(p.Value) == "number" then value = tostring(math.floor(p.Value + 0.5)) end
 
     local out = {}
@@ -5987,7 +6026,7 @@ local function watchMode()
         if not M.uiEverUp and not M.uiAlarmed and M.uiMisses >= M.UI_ALARM then
             M.uiAlarmed = true
             _P("[pad] controller interface never came up")
-            say("Геймпадный интерфейс не включён. В параметрах игры режим ввода должен быть «Контроллер»", false)
+            say(T"The controller interface is not on. In the game's options the input mode has to be Controller", false)
         end
         if M.uiMisses < M.UI_GRACE then return end
     end
@@ -6009,10 +6048,10 @@ local function watchMode()
 
     if not up then
         _P("[pad] no controller screens (ControllerMode " .. tostring(M.lastMode) .. ")")
-        say("Геймпадный интерфейс выключен", false)
+        say(T"Controller interface off", false)
     else
         _P("[pad] controller screens up (ControllerMode " .. tostring(M.lastMode) .. ")")
-        say("Геймпадный интерфейс", false)
+        say(T"Controller interface", false)
     end
 end
 
@@ -6110,10 +6149,10 @@ local function readerTick()
     if saving ~= nil and saving ~= M.saving then
         if saving then
             M.saving = true
-            say("Сохранение", false)
+            say(T"Saving", false)
         elseif M.saving == true then
             M.saving = false
-            say("Сохранено", false)
+            say(T"Saved", false)
         end
     end
 
@@ -6293,7 +6332,7 @@ local function readerTick()
                 M.lastScreen, M.lastFocus = "<none>", nil
                 M.lines, M.cursor, M.linesFrom = {}, 0, "screen"
                 _P("[pad] no readable screen")
-                say("Экран не читается")
+                say(T"This screen cannot be read")
             end
             return
         end
@@ -6318,10 +6357,10 @@ local function readerTick()
                #a.texts .. " strings, no focus, " .. math.floor(M.cost / 1000) .. " ms)")
             -- No focus to follow here. Say the title, and the once-per-session reminder that
             -- the review cursor is how such a screen gets read at all.
-            pend(screenTitle(a) .. ", " .. M.plural(#M.lines, "строка"))
+            pend(screenTitle(a) .. ", " .. M.plural(#M.lines, "line"))
             if not M.hintGiven then
                 M.hintGiven = true
-                pend("Обзор — PageUp и PageDown")
+                pend(T"Review with PageUp and PageDown")
             end
             -- A save screen names where its cursor already is, in the same breath as the
             -- screen: arriving on it and hearing only "Загрузить игру" is arriving nowhere.
@@ -6406,7 +6445,7 @@ local function readerTick()
         end
         text = readRow(focused)
         if text ~= nil and M.listCount and M.listCount > 1 then
-            text = text .. ", " .. (alt + 1) .. " из " .. M.listCount
+            text = text .. ", " .. (alt + 1) .. T" of " .. M.listCount
         end
     elseif M.tabDirty or widget.name ~= M.tabScreen or M.ticks % 120 == 0 then
         -- The same question for a screen whose focus is not a list row. Character creation is
@@ -6421,7 +6460,7 @@ local function readerTick()
         local t = M.tabState(widget.node, marks)
         if t ~= nil and t.name ~= M.tab then
             M.tab = t.name
-            pend(t.name .. ", " .. t.index .. " из " .. t.count)
+            pend(t.name .. ", " .. t.index .. T" of " .. t.count)
             -- The column under the tab is a different one now, so its first control has to
             -- be said again even if it happens to read the same as the last tab's.
             M.lastFocus, M.lastProse = nil, nil
@@ -6605,7 +6644,7 @@ function M.readerStart(quiet)
     -- means the same thing; two lines at startup only meant the first was cut off by the
     -- second, and both landed on the loading screen's tip. Started by hand from the console it
     -- still answers, because then it is the answer to a question somebody just asked.
-    if quiet ~= true then say("Чтение экранов включено") end
+    if quiet ~= true then say(T"Screen reading on") end
     return true
 end
 
@@ -6628,7 +6667,7 @@ local SELECT_HINTS = { "focus", "select", "highlight", "current", "active", "che
 --- Everything the active screen marks as selected, whatever it calls it.
 function M.probeSelection(tag)
     local a = M.active(60, 2000)
-    if a == nil then _P("[pad] probeSelection: no active screen") say("Нечего снимать") return nil end
+    if a == nil then _P("[pad] probeSelection: no active screen") say(T"Nothing to capture") return nil end
 
     local hits = {}
     walkFrom(a.node, function(o, depth, i)
@@ -6656,7 +6695,7 @@ function M.probeSelection(tag)
     A.write("selection_" .. tostring(a.name) .. "_" .. #M.probes,
             { screen = a.name, tag = tag, index = #M.probes, count = #hits, hits = hits,
               texts = a.texts })
-    say("Снято, " .. #hits .. " меток")
+    say(T"Captured, " .. #hits .. T" marks")
     return hits
 end
 

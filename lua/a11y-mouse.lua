@@ -40,9 +40,15 @@ local soft, props = A.soft, A.props
 
 M.marks = {}
 
---- Captions the sweep needs, keyed by ASCII: the console input buffer is ANSI and a Russian
+--- Captions the sweep needs, keyed by ASCII: the console input buffer is ANSI and a non-Latin
 --- argument arrives as question marks (§9 rule 3), so the text lives in this file and the
 --- console passes a key.
+---
+--- These are Russian and stay Russian, alone in this repository. This module is not part of
+--- the layer - it is not in the load order, nothing a player runs reaches it, and it exists to
+--- aim a real mouse pointer at the options screen of the one machine it was written on. Making
+--- it multilingual would mean handles for forty captions to serve a debugging tool; if you need
+--- it on a game in another language, replace the values.
 M.CAPTIONS = {
     options = "Параметры", newgame = "Новая игра", load = "Загрузить игру",
     multi = "Сетевая игра", mods = "Менеджер модов", credits = "Авторы",
@@ -342,7 +348,7 @@ function M.state(tag)
     local a = P.active(8)
     local rec = { tag = tag, mode = tostring(mode), screen = tostring(a and a.name) }
 
-    local row = A.soft(function() return P.findRow(P.SCHEME_ROW) end)
+    local row = A.soft(function() return P.findRow(P.schemeRow()) end)
     if row ~= nil and row.combo ~= nil then
         local cp = props(row.combo)
         rec.row = tostring(row.text)

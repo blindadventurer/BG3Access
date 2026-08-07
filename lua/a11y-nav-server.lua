@@ -15,6 +15,12 @@
 local M = {}
 M.CHANNEL = "A11yNav"
 
+-- The words this side invents - what a nameless object is called - are English in the source
+-- and said in the game's language, exactly as on the client. a11y-lang is loaded on the server
+-- too for this one reason; without it these come out in English and nothing else changes.
+local Lang = _G.Lang
+local T = (Lang ~= nil and Lang.t) or function(s) return s end
+
 local function try(fn, ...)
     local r = table.pack(pcall(fn, ...))
     if r[1] then return { ok = true, value = r[2] } end
@@ -297,18 +303,18 @@ M.INDEX_FILE = "A11y/level_index.txt"
 -- Everything else on the level is scenery and is left out - an index of all 2036 would be the
 -- same wall of barrels the scanner already refuses to read out.
 M.INDEX_KINDS = {
-    { "Controlpanel",        "пульт" },
-    { "_Console",            "пульт" },
-    { "Lever",               "рычаг" },
-    { "Rune_Key",            "руна-ключ" },
-    { "_Key_",               "ключ" },
-    { "Rune_Tablet",         "руническая табличка" },
-    { "TOOL_Ladder",         "лестница" },
-    { "DOOR_",               "дверь" },
-    { "_Hatch",              "люк" },
-    { "WaypointShrine",      "точка перехода" },
-    { "PUZ_",                "механизм" },
-    { "Interactive",         "механизм" },
+    { "Controlpanel",        T"console" },
+    { "_Console",            T"console" },
+    { "Lever",               T"lever" },
+    { "Rune_Key",            T"rune key" },
+    { "_Key_",               T"key" },
+    { "Rune_Tablet",         T"rune tablet" },
+    { "TOOL_Ladder",         T"ladder" },
+    { "DOOR_",               T"door" },
+    { "_Hatch",              T"hatch" },
+    { "WaypointShrine",      T"waypoint" },
+    { "PUZ_",                T"mechanism" },
+    { "Interactive",         T"mechanism" },
 }
 
 -- What is never worth saying out loud, tested before anything else.

@@ -23,6 +23,7 @@ end
 
 local M = {}
 local try, soft = A.try, A.soft
+local Lang, T = A.Lang, A.T
 
 local function say(text)
     if _G.Pad and _G.Pad.say then _G.Pad.say(text, true) else A.say(text, true) end
@@ -304,10 +305,10 @@ end
 -- produced; anything else falls back to "использовать", which is true of every use action there
 -- is and so cannot mislead.
 local USE_VERBS = {
-    Door      = "дверь",
-    OpenClose = "открыть",
-    StoryUse  = "использовать",
-    Throw     = "бросить",
+    Door      = T"door",
+    OpenClose = T"open",
+    StoryUse  = T"use",
+    Throw     = T"throw",
 }
 
 --- The verb for a thing, or nil if it takes no action at all.
@@ -322,7 +323,7 @@ function M.useVerb(e)
         if t ~= nil then
             local word = USE_VERBS[t]
             if word ~= nil then return word end
-            return "использовать"
+            return T"use"
         end
     end
     return nil
@@ -396,21 +397,21 @@ function M.lockPhrase(e)
     local id = soft(function() return tostring(lock.Key_M) end)
     local dc = tonumber(soft(function() return lock.LockDC end))
 
-    local bits = { "заперто" }
+    local bits = { T"locked" }
     if type(id) == "string" and id ~= "" then
         local k = M.keysKnown()[id]
         if k == nil then
-            bits[#bits + 1] = "ключа нет"
+            bits[#bits + 1] = T"no key"
         elseif k.holder ~= nil then
-            bits[#bits + 1] = "ключ у " .. k.holder
+            bits[#bits + 1] = T"key held by " .. k.holder
         else
-            bits[#bits + 1] = "ключ рядом"
+            bits[#bits + 1] = T"key nearby"
         end
     end
     -- A negative DC is the engine saying the lock takes no pick at all, which is a different
     -- answer from a hard one and saves the player the attempt and the broken tools.
-    if dc ~= nil and dc >= 0 then bits[#bits + 1] = "отмычка " .. dc
-    elseif dc ~= nil then bits[#bits + 1] = "отмычкой не открыть" end
+    if dc ~= nil and dc >= 0 then bits[#bits + 1] = T"lockpicking " .. dc
+    elseif dc ~= nil then bits[#bits + 1] = T"cannot be picked" end
     return table.concat(bits, ", ")
 end
 
@@ -426,19 +427,19 @@ local function kindOf(e)
         -- is on a corpse the list called "существо", indistinguishable from the companion
         -- standing beside it.
         local hp = soft(function() return e.Health.Hp end)
-        if type(hp) == "number" and hp <= 0 then return "труп", 2, true end
-        if has(e, "PartyMember") then return "спутник", 1, true end
-        return "существо", 2, true
+        if type(hp) == "number" and hp <= 0 then return T"corpse", 2, true end
+        if has(e, "PartyMember") then return T"companion", 1, true end
+        return T"creature", 2, true
     end
     local off = has(e, "InteractionDisabled")
-    if has(e, "IsDoor") then return "дверь", 3, not off end
-    if has(e, "InventoryContainer") then return "контейнер", 4, not off end
+    if has(e, "IsDoor") then return T"door", 3, not off end
+    if has(e, "InventoryContainer") then return T"container", 4, not off end
     -- The verb the game itself offers, which is where this used to read `CanInteract` - a
     -- creature component that never fires for an object, so "взаимодействие" held doors and
     -- chests and nothing else, and every console, lever and pod landed in "предметы".
     local verb = M.useVerb(e)
     if verb ~= nil then return verb, 5, true end
-    if has(e, "CanInteract") then return "объект", 5, not off end
+    if has(e, "CanInteract") then return T"object", 5, not off end
     return nil, 9, false
 end
 M.kindOf = kindOf
@@ -479,8 +480,8 @@ M.RADII = { 10, 20, 50, 100, 200, 300 }
 
 --- Twelve directions relative to where the character looks, because a clock face is the one
 --- bearing scheme that needs no explaining.
-local CLOCK = { "прямо", "на час", "на два", "направо", "на четыре", "на пять",
-                "назад", "на семь", "на восемь", "налево", "на десять", "на одиннадцать" }
+local CLOCK = { T"ahead", T"one o'clock", T"two o'clock", T"right", T"four o'clock", T"five o'clock",
+                T"behind", T"seven o'clock", T"eight o'clock", T"left", T"ten o'clock", T"eleven o'clock" }
 
 local function bearing(dx, dz, yaw)
     -- Screen-space heading of the target, then rotated into the character's frame.
@@ -507,13 +508,13 @@ function M.scan(radius, quiet)
     local function complain(text) if not quiet then say(text) end end
 
     local me = M.me()
-    if me == nil then complain("Персонаж не найден") return nil end
+    if me == nil then complain(T"Character not found") return nil end
     local pos = positionOf(me)
-    if pos == nil then complain("Позиция неизвестна") return nil end
+    if pos == nil then complain(T"Position unknown") return nil end
     local yaw = yawOf(me)
 
     local near = soft(function() return Ext.Entity.GetEntitiesAroundPosition(pos, radius) end)
-    if type(near) ~= "table" then complain("Сканирование недоступно") return nil end
+    if type(near) ~= "table" then complain(T"Scanning unavailable") return nil end
 
     -- Which containers the player has already opened.
     --
@@ -568,7 +569,7 @@ function M.scan(radius, quiet)
                                       -- Chests and bodies only. `CanBeLooted` is on the living
                                       -- too, and the first run of this announced Shadowheart as
                                       -- unsearched about two seconds after she was freed.
-                                      unopened = (kind == "контейнер" or kind == "труп" or
+                                      unopened = (kind == T"container" or kind == T"corpse" or
                                                   (kind == nil and has(e, "CanBeLooted")))
                                                  and not opened[tostring(e)] or nil }
                 end
@@ -616,18 +617,18 @@ end
 -- the reliable signals are "is a creature" and "can be interacted with". So the split is
 -- coarse on purpose; a category that lies is worse than one that is broad.
 M.CATEGORIES = {
-    { key = "all",     name = "всё" },
-    { key = "markers", name = "метки" },
-    { key = "quest",   name = "задача" },
+    { key = "all",     name = T"everything" },
+    { key = "markers", name = T"markers" },
+    { key = "quest",   name = T"objective" },
     -- Named places, and the fast-travel shrines among them. Next to "задача" on purpose: the
     -- two together are the whole answer to "where do I go" - one says where the story is, the
     -- other says what the world is made of.
-    { key = "places",  name = "локации" },
-    { key = "landmarks", name = "ориентиры" },
-    { key = "explore", name = "неизведанное" },
-    { key = "beings",  name = "существа" },
-    { key = "usable",  name = "взаимодействие" },
-    { key = "things",  name = "предметы" },
+    { key = "places",  name = T"places" },
+    { key = "landmarks", name = T"landmarks" },
+    { key = "explore", name = T"unexplored" },
+    { key = "beings",  name = T"creatures" },
+    { key = "usable",  name = T"interaction" },
+    { key = "things",  name = T"items" },
 }
 M.category = 1
 M.view = {}
@@ -647,51 +648,48 @@ M.FAR = { markers = true, quest = true, landmarks = true }
 -- blind; the categories are, because `CanInteract` and `IsDoor` are simply not on entities
 -- that far out and everything lands in "предметы" among two hundred shells.
 --
--- The name is what is left, and it is enough. Stems are stored without their first letter,
--- for the same reason the objective's are: names arrive capitalised and Lua's `lower()` does
--- not touch Cyrillic.
-local LANDMARK_STEMS = {
-    "вер",      -- дверь
-    "орот",     -- ворота
-    "юк",       -- люк
-    "естниц",   -- лестница
-    "ход",      -- вход, выход, проход
-    "унду",     -- сундук
-    "щик",      -- ящик
-    "лтар",     -- алтарь
-    "руг древн", -- круг древних знаков
-    "уины",     -- руины
-    "клеп",     -- склеп
-    "ашня",     -- башня
-    "ычаг",     -- рычаг
-    "айник",    -- тайник
-    "ортал",    -- портал
-    "остер", "остёр",  -- костер
-    "агерь",    -- лагерь
-    "юк в",     -- люк в подвал
-}
+-- The name is what is left, and it is enough. The stems are the one thing here that cannot be
+-- written once for every language - the game gives no handle for "this thing is a door", only
+-- a name - so they live per language in a11y-lang, stored without their first letter for the
+-- same reason the objective's are: names arrive capitalised and Lua's `lower()` does not touch
+-- anything outside ASCII. A language with no list loses this category and keeps every other,
+-- because what the game itself marks on the map comes from the journal index and carries no
+-- words at all.
+local function landmarkStems()
+    if Lang == nil then return nil end
+    return Lang.landmarks()
+end
 
--- A stem may only be followed by a case ending, not by the rest of another word. Without this
+-- A stem may only be followed by an ending, not by the rest of another word. Without this
 -- "юк" (люк, a hatch) matched **рюкзак**, and a backpack lying in the sand was announced as a
 -- landmark three hundred metres of list away from anything that is one. Two Cyrillic letters,
--- four bytes: enough for "двери", "входа", "лестницы", not enough for "-зак".
+-- four bytes: enough for "двери", "входа", "лестницы", not enough for "-зак". English inflects
+-- less and its stems are longer, so it allows less; a11y-lang holds the number.
 M.STEM_TAIL = 4
+
+local function stemTail()
+    if Lang ~= nil then return Lang.stemTail() end
+    return M.STEM_TAIL
+end
 
 local function stemHit(name, stem)
     local from = 1
+    local tail = stemTail()
     while true do
         local s, e = name:find(stem, from, true)
         if s == nil then return false end
         local rest = name:match("^[^%s,%.;:%(%)/%-]*", e + 1) or ""
-        if #rest <= M.STEM_TAIL then return true end
+        if #rest <= tail then return true end
         from = s + 1
     end
 end
 M.stemHit = stemHit
 
 local function isLandmark(name)
-    for i = 1, #LANDMARK_STEMS do
-        if stemHit(name, LANDMARK_STEMS[i]) then return true end
+    local stems = landmarkStems()
+    if stems == nil then return false end
+    for i = 1, #stems do
+        if stemHit(name, stems[i]) then return true end
     end
     return false
 end
@@ -721,12 +719,12 @@ local function matches(key, it)
     -- The living only. A corpse answers a different question - it is somewhere to search, and
     -- that is what "взаимодействие" is for; leaving it here made "существа" the count of who is
     -- in the room plus everyone who used to be.
-    if key == "beings" then return it.kind == "существо" or it.kind == "спутник" end
+    if key == "beings" then return it.kind == T"creature" or it.kind == T"companion" end
     if key == "usable" then
         -- Asked of the entity when the list was built, not guessed back from the word: the
         -- words are now the game's own verbs and there are more of them than this test could
         -- ever enumerate.
-        return it.usable == true and it.kind ~= "спутник" and it.kind ~= "существо"
+        return it.usable == true and it.kind ~= T"companion" and it.kind ~= T"creature"
     end
     if key == "things" then return it.kind == nil end
     if key == "landmarks" then
@@ -735,7 +733,7 @@ local function matches(key, it)
         -- hundred metres, and a category that answers "where do I go" with loot answers a
         -- different question than the one asked. Chests and crates are still here - by name,
         -- through the stems, which is also what keeps a rucksack out.
-        return it.indexed == true or it.kind == "дверь" or isMarkerNamed(it.name)
+        return it.indexed == true or it.kind == T"door" or isMarkerNamed(it.name)
                or isLandmark(it.name)
     end
     -- "quest" is not here on purpose: it is built in rebuildView from the journal table rather
@@ -836,7 +834,7 @@ function M.categoryStep(delta)
     end
     M.category = was
     M.rebuildView()
-    say("Больше ничего")
+    say(T"Nothing more")
     return M.view
 end
 
@@ -989,7 +987,7 @@ M.STEP_GAIN = 2
 function M.stepTarget(anchor)
     local me = M.me()
     local mp = me and positionOf(me)
-    if mp == nil then return nil, "Позиция неизвестна" end
+    if mp == nil then return nil, T"Position unknown" end
     if M.stale() then M.scan() end
 
     local ax, az = anchor.pos[1], anchor.pos[3]
@@ -1029,9 +1027,9 @@ function M.stepTarget(anchor)
     end
 
     if seen > 0 then
-        return nil, "В ту сторону всё, что стоит, не приближает к участку"
+        return nil, T"Everything standing that way is no closer to the area"
     end
-    return nil, "В ту сторону ничего не стоит, поверните или подойдите ближе"
+    return nil, T"Nothing stands that way, turn or come closer"
 end
 
 --- The places on this level the character has never stood near, nearest first.
@@ -1126,7 +1124,7 @@ function M.exploreView()
             local dx, dz = a.pos[1] - pos[1], a.pos[3] - pos[3]
             local dist = math.sqrt(dx * dx + dz * dz)
             if dist <= M.EXPLORE_MAX then
-                local e = { name = "участок", kind = nil, anchor = a.guid,
+                local e = { name = T"area", kind = nil, anchor = a.guid,
                             pos = a.pos, dist = dist, dir = bearing(dx, dz, yaw) }
                 -- Which named place that patch of ground belongs to, when it belongs to one.
                 -- "Участок, на два, 180 м" is a direction; "участок, Вымершая деревня, на два,
@@ -1408,7 +1406,7 @@ function M.waypointsKnown(ids, fresh)
             -- about further down.
             if wps[j][1] == id then name = M.wpName(wps[j]) break end
         end
-        say("Новая точка перехода" .. (name ~= nil and (": " .. name) or ""))
+        say(T"New waypoint" .. (name ~= nil and (": " .. name) or ""))
     end
 end
 
@@ -1420,7 +1418,7 @@ local function wpName(w)
     if w[2] ~= nil and pad ~= nil and pad.loca ~= nil then
         t = soft(function() return pad.loca(w[2]) end)
     end
-    if type(t) ~= "string" or t == "" or t == w[2] then t = "точка перехода" end
+    if type(t) ~= "string" or t == "" or t == w[2] then t = T"waypoint" end
     w.said = t
     return t
 end
@@ -1522,7 +1520,7 @@ function M.placeView()
             -- hundred metres off is a crossing of the map on one press. Further out it is an
             -- anchor, which walks in hops the player can hear the end of.
             local near = (d <= M.QUEST_DIRECT)
-            out[#out + 1] = { name = wpName(w), kind = "точка перехода", dist = d,
+            out[#out + 1] = { name = wpName(w), kind = T"waypoint", dist = d,
                               dir = bearing(dx, dz, yaw), pos = p, place = true,
                               cluster = clusterOf(w[1]),
                               entity = near and e or nil, uuid = w[3],
@@ -1620,7 +1618,7 @@ function M.placeTick()
     M.placeNow = name
     if name == nil or name == M.placeSaid then return false end
     M.placeSaid = name
-    say("Локация: " .. name)
+    say(T"Place: " .. name)
     return true
 end
 
@@ -1700,14 +1698,14 @@ function M.cameraTick()
     local now = soft(Ext.Utils.MonotonicTime) or 0
     if M.camSaid ~= nil and (now - M.camSaid) < M.CAMERA_QUIET_MS then return false end
     M.camSaid = now
-    local line = string.format("Камера далеко, %.0f м", d)
+    local line = string.format(T"Camera is far away, %.0f m", d)
     -- The way back, once. The game's own controller bindings put the camera views on the d-pad
     -- (front view down, top view up), which is the nearest thing to a reset it has - there is no
     -- zoom binding on a pad at all. Said the first time only: if it does not work, hearing it
     -- again every half minute is worse than silence.
     if not M.camHinted then
         M.camHinted = true
-        line = line .. ". Крестовина вниз или вверх возвращает вид"
+        line = line .. T". D-pad down or up brings the view back"
     end
     say(line)
     return true
@@ -2101,7 +2099,7 @@ function M.portalEntry(row)
     local pos = best and best.pos or src
     local dx, dz = pos[1] - mp[1], pos[3] - mp[3]
     local d = math.sqrt(dx * dx + dz * dz)
-    return { name = (best and best.name or "переход"), kind = best and "переход" or nil,
+    return { name = (best and best.name or T"crossing"), kind = best and T"crossing" or nil,
              pos = pos, dist = d, dir = bearing(dx, dz, yaw),
              entity = best and best.entity or nil,
              anchor = (best == nil or best.entity == nil) and "g:" .. tostring(row[1]) or nil,
@@ -2145,7 +2143,7 @@ function M.radiusStep(delta)
     M.radius = M.RADII[at]
     if M.stale() then M.scan() end
     local view = M.rebuildView()
-    say("Радиус " .. M.radius .. " метров, " .. #view)
+    say(T"Radius " .. M.radius .. T" metres, " .. #view)
     return M.radius
 end
 
@@ -2175,7 +2173,7 @@ M.PEEK = 3
 
 local function peek(it)
     if it.looted then return nil end
-    if it.kind ~= "труп" and it.kind ~= "контейнер" and not it.unopened then return nil end
+    if it.kind ~= T"corpse" and it.kind ~= T"container" and not it.unopened then return nil end
     local items = M.contentsOf(it.entity)
     if items == nil or #items == 0 then return nil end
     local names, seen = {}, {}
@@ -2189,7 +2187,7 @@ local function peek(it)
         end
     end
     if #names == 0 then return nil end
-    local more = (#items > #names) and (" и ещё " .. (#items - #names)) or ""
+    local more = (#items > #names) and string.format(T" and %d more", #items - #names) or ""
     return table.concat(names, ", ") .. more
 end
 M.peek = peek
@@ -2197,10 +2195,10 @@ M.peek = peek
 local function describe(it)
     local parts = { it.name }
     if it.kind then parts[#parts + 1] = it.kind end
-    if it.looted then parts[#parts + 1] = "пусто"
-    elseif it.unopened then parts[#parts + 1] = "не обыскано" end
+    if it.looted then parts[#parts + 1] = T"empty"
+    elseif it.unopened then parts[#parts + 1] = T"not searched" end
     local inside = soft(function() return peek(it) end)
-    if inside ~= nil then parts[#parts + 1] = "внутри " .. inside end
+    if inside ~= nil then parts[#parts + 1] = T"inside " .. inside end
     -- Why pressing A will not be enough. Said in the list rather than only on arrival, because
     -- the decision it changes - walk over there at all, and with whom - is taken from the list.
     local lock = M.lockPhrase(it.entity)
@@ -2222,17 +2220,17 @@ local function describe(it)
     -- to want, a place holding a target - keeps the short form, because there the row is not a
     -- quest and naming a section would claim more than is known.
     if it.catSaid then parts[#parts + 1] = it.catSaid
-    elseif it.task then parts[#parts + 1] = "по заданию" end
+    elseif it.task then parts[#parts + 1] = T"quest target" end
     -- A door that leads off this island rather than across a room. Worth saying in the same
     -- breath as the name, because it is the difference between a cupboard and the way in.
-    if it.gate then parts[#parts + 1] = "переход" end
+    if it.gate then parts[#parts + 1] = T"crossing" end
     -- And the other side of that: no walk in this bearing arrives, whatever the distance says.
-    if it.cross then parts[#parts + 1] = "напрямую не пройти" end
+    if it.cross then parts[#parts + 1] = T"no direct route" end
     if it.inside then
-        parts[#parts + 1] = "вы здесь"
+        parts[#parts + 1] = T"you are here"
     else
         if it.anchor ~= nil and it.dir then parts[#parts + 1] = it.dir end
-        parts[#parts + 1] = string.format("%.0f м", it.dist)
+        parts[#parts + 1] = string.format(T"%.0f m", it.dist)
     end
     return table.concat(parts, ", ")
 end
@@ -2244,7 +2242,7 @@ function M.around(limit)
     local list = M.view
     local cat = M.CATEGORIES[M.category]
     if #list == 0 then
-        say(cat.key == "all" and "Рядом никого" or (cat.name .. ", пусто"))
+        say(cat.key == "all" and T"Nothing nearby" or (cat.name .. T", empty"))
         return list
     end
     local n = math.min(#list, limit or 8)
@@ -2328,7 +2326,7 @@ function M.step(delta)
     if M.stale() then M.scan() end
     if #M.view == 0 then
         local cat = M.CATEGORIES[M.category]
-        say(cat.key == "all" and "Рядом никого" or (cat.name .. ", пусто"))
+        say(cat.key == "all" and T"Nothing nearby" or (cat.name .. T", empty"))
         return
     end
     -- Running off either end used to be silent, which is indistinguishable from a key that
@@ -2336,8 +2334,8 @@ function M.step(delta)
     -- looked like all the way up the list. Now an end says it is an end.
     local i = M.cursor + (delta or 1)
     local edge = nil
-    if i < 1 then i, edge = 1, "начало списка" end
-    if i > #M.view then i, edge = #M.view, "конец списка" end
+    if i < 1 then i, edge = 1, T"top of the list" end
+    if i > #M.view then i, edge = #M.view, T"end of the list" end
     M.cursor = i
 
     local it = M.view[i]
@@ -2346,13 +2344,13 @@ function M.step(delta)
     -- same position in it is read instead.
     if not refreshEntry(it) then
         M.scan()
-        if #M.view == 0 then say("Рядом никого") return end
+        if #M.view == 0 then say(T"Nothing nearby") return end
         i = math.min(i, #M.view)
         M.cursor = i
         it = M.view[i]
         refreshEntry(it)
     end
-    say((edge and (edge .. ". ") or "") .. describe(it) .. ", " .. i .. " из " .. #M.view)
+    say((edge and (edge .. ". ") or "") .. describe(it) .. ", " .. i .. T" of " .. #M.view)
     return it
 end
 
@@ -2363,9 +2361,9 @@ end
 --- are the answer the game itself gives a sighted player, in the corner of the screen.
 function M.where()
     local me = M.me()
-    if me == nil then say("Персонаж не найден") return end
+    if me == nil then say(T"Character not found") return end
     local pos = positionOf(me)
-    local name = nameOf(me) or "персонаж"
+    local name = nameOf(me) or T"character"
     local parts = { name }
     local row = M.placeAt(pos)
     local place = row and placeName(row) or nil
@@ -2513,13 +2511,13 @@ end
 --- The same, said out loud: what is in the thing in front of you.
 function M.containerSay()
     local c = M.openContainer()
-    if c == nil then say("Ничего не открыто") return nil end
-    if #c.items == 0 then say((c.name or "Контейнер") .. ", пусто") return c end
+    if c == nil then say(T"Nothing is open") return nil end
+    if #c.items == 0 then say((c.name or T"Container") .. T", empty") return c end
     local parts = {}
     for i = 1, math.min(#c.items, 12) do
-        parts[#parts + 1] = c.items[i].name or "предмет"
+        parts[#parts + 1] = c.items[i].name or T"item"
     end
-    say((c.name or "Контейнер") .. ", " .. #c.items .. ". " .. table.concat(parts, ". "))
+    say((c.name or T"Container") .. ", " .. #c.items .. ". " .. table.concat(parts, ". "))
     return c
 end
 
@@ -2536,14 +2534,14 @@ M.CHANNEL = "A11yNav"
 function M.goTo(index)
     local i = index or M.cursor
     local it = M.view[i]
-    if it == nil then say("Не выбрано") return false end
+    if it == nil then say(T"Nothing selected") return false end
     -- Measured again first. Where a uuid exists the server resolves the object's own position
     -- anyway, but the check also catches an entry that is gone - and for the quest entries it
     -- is what makes the distance in "вы на месте" the distance now rather than the distance
     -- when the list was taken.
     if not M.refreshEntry(it) then
         M.scan()
-        say("Пропало, список обновлён")
+        say(T"Gone, the list has been refreshed")
         return false
     end
     M.cursor = i
@@ -2612,7 +2610,7 @@ function M.stop()
 
     local body = soft(Ext.Json.Stringify, { cmd = "stop", hard = hard })
     soft(function() Ext.Net.PostMessageToServer(M.CHANNEL, body) end)
-    say(hard and "Стоп, жёстко" or "Стоп")
+    say(hard and T"Stop, hard" or T"Stop")
 end
 
 --- Did it stop? Called from the same pass as walkTick.
@@ -2639,9 +2637,9 @@ function M.stopTick()
     if M.stopHow == "" then
         -- The server answered and had nothing to answer with. Worth saying once in plain
         -- words, because no amount of pressing the key will change it.
-        say("Не останавливается. Сборка без очистки очереди — стоп невозможен")
+        say(T"Not stopping. This build cannot clear the queue, so a stop is impossible")
     else
-        say("Не останавливается, нажмите ещё раз")
+        say(T"Not stopping, press again")
     end
     return true
 end
@@ -2703,28 +2701,28 @@ function M.progress()
         -- Not walking. The same question about the entry under the cursor, because that is
         -- what the player is deciding whether to walk to.
         local it = M.view[M.cursor]
-        if it == nil then say("Никуда не идём") return nil end
-        if not refreshEntry(it) then say("Никуда не идём") return nil end
-        say("Не идём. Выбрано: " .. describe(it))
+        if it == nil then say(T"Not going anywhere") return nil end
+        if not refreshEntry(it) then say(T"Not going anywhere") return nil end
+        say(T"Not walking. Selected: " .. describe(it))
         return nil
     end
 
     local d = M.distanceTo(w.uuid)
     if d == nil then
         M.walking = nil
-        say("Цель пропала: " .. tostring(w.name))
+        say(T"Target gone: " .. tostring(w.name))
         return nil
     end
 
-    local bits = { tostring(w.name), string.format("%.0f м", d) }
+    local bits = { tostring(w.name), string.format(T"%.0f m", d) }
     -- Against the last thing said, not against the start: on the fifth press the player is
     -- asking about the last few seconds, not about the whole journey.
     local ref = w.saidDist or w.startDist
     if ref ~= nil then
         local delta = ref - d
-        if delta >= 1 then bits[#bits + 1] = string.format("ближе на %.0f", delta)
-        elseif delta <= -1 then bits[#bits + 1] = string.format("дальше на %.0f", -delta)
-        else bits[#bits + 1] = "без изменений" end
+        if delta >= 1 then bits[#bits + 1] = string.format(T"closer by %.0f", delta)
+        elseif delta <= -1 then bits[#bits + 1] = string.format(T"further by %.0f", -delta)
+        else bits[#bits + 1] = T"no change" end
     end
     w.saidDist = d
     say(table.concat(bits, ", "))
@@ -2740,7 +2738,7 @@ function M.walkTick()
     -- quietly is how the character ends up running somewhere with the layer saying nothing.
     if (now - w.at) > M.WALK_GIVEUP_MS then
         M.walking = nil
-        say("Не дошли: " .. tostring(w.name) .. ". Остановить — стик")
+        say(T"Did not arrive: " .. tostring(w.name) .. T". Stop with the stick")
         return true
     end
 
@@ -2766,17 +2764,17 @@ function M.walkTick()
             -- The action is promised only when the thing can actually take one and we are
             -- close enough for the game to offer it; otherwise the distance is said instead,
             -- which is the fact the player needs to decide whether to walk the rest.
-            local bits = { "Пришли: " .. tostring(w.name) }
+            local bits = { T"Arrived: " .. tostring(w.name) }
             if M.canInteract(e, d) then
                 -- The game's own verb where it has one. "действие — кнопка A" was the layer
                 -- admitting it did not know what the button would do; "использовать — кнопка A"
                 -- is what the object itself says.
                 local verb = M.useVerb(e)
-                bits[#bits + 1] = (verb or "действие") .. " — кнопка A"
+                bits[#bits + 1] = (verb or T"action") .. T" - button A"
                 local lock = M.lockPhrase(e)
                 if lock ~= nil then bits[#bits + 1] = lock end
             else
-                bits[#bits + 1] = string.format("%.0f м", d)
+                bits[#bits + 1] = string.format(T"%.0f m", d)
             end
             say(table.concat(bits, ", "))
             return true
@@ -2790,7 +2788,7 @@ function M.walkTick()
             w.best, w.bestAt = d, now
         elseif (now - (w.bestAt or now)) > M.WALK_CIRCLE_MS then
             w.bestAt = now
-            say("Не приближаемся: " .. tostring(w.name) .. ", " .. string.format("%.0f м", d))
+            say(T"Not getting closer: " .. tostring(w.name) .. ", " .. string.format(T"%.0f m", d))
             return true
         end
     end
@@ -2811,9 +2809,9 @@ function M.walkTick()
         local left = ""
         if tp ~= nil then
             local dx, dz = tp[1] - p[1], tp[3] - p[3]
-            left = ", осталось " .. string.format("%.0f м", math.sqrt(dx * dx + dz * dz))
+            left = string.format(T", %.0f m left", math.sqrt(dx * dx + dz * dz))
         end
-        say("Стою" .. left .. ", дальше не идёт")
+        say(T"Standing still" .. left .. T", going no further")
         M.walking = nil
         return true
     end
@@ -2859,12 +2857,12 @@ function M.readySay(id, key)
         -- the game is waiting, and "something is being asked" beats silence in front of a
         -- modal that has to be answered before anything else works.
         _P("[nav] ready check " .. tostring(id) .. ": no text for key " .. tostring(key))
-        say("Игра ждет подтверждения")
+        say(T"The game is waiting for an answer")
         return nil
     end
     -- Named as a question, because out of nowhere the sentence alone sounds like narration -
     -- and this one is a fork in the road that will not be offered twice.
-    say("Игра спрашивает. " .. text)
+    say(T"The game is asking. " .. text)
     return text
 end
 
@@ -2881,9 +2879,9 @@ local function onNet(channel, payload)
         -- Naming the reason, because the two are different problems for the player: a place
         -- the pathing will not take them is a "go round"; a target in another region is the
         -- layer offering something it should not have, and the honest answer is to say so.
-        say(msg.why == "level" and "Туда не пройти: это другая локация"
-            or msg.why == "gone" and "Туда не пройти: этого здесь больше нет"
-            or "Туда не пройти")
+        say(msg.why == "level" and T"No route there: that is another place"
+            or msg.why == "gone" and T"No route there: it is no longer here"
+            or T"No route there")
     end
     if msg.cmd == "quest" then
         -- The story moved, and the server is the only half that hears it move.
@@ -2900,7 +2898,7 @@ local function onNet(channel, payload)
         -- the thing, and the thing announces itself.
         if msg.passed == false then
             M.readyPending = nil
-            say("Отменено")
+            say(T"Cancelled")
         else
             M.readyPending = nil
         end
@@ -2966,7 +2964,7 @@ function M.combat()
     local out = { inCombat = myHandle ~= nil, allies = {}, enemies = {}, active = nil,
                   myTeam = myTeam }
     local hp, max = healthOf(me)
-    out.me = { name = nameOf(me) or "вы", hp = hp, max = max }
+    out.me = { name = nameOf(me) or T"you", hp = hp, max = max }
     if myHandle == nil then return out end
 
     -- The CombatHandle every participant carries *is* the combat: that entity holds
@@ -3025,22 +3023,22 @@ end
 
 local function healthWord(rec)
     if rec.hp == nil then return nil end
-    if rec.hp <= 0 then return "повержен" end
-    return rec.hp .. " из " .. tostring(rec.max)
+    if rec.hp <= 0 then return T"down" end
+    return rec.hp .. T" of " .. tostring(rec.max)
 end
 
 --- The situation, out loud.
 function M.combatSay()
     local c = M.combat()
-    if c == nil then say("Нет данных") return end
-    if not c.inCombat then say("Не в бою") return end
+    if c == nil then say(T"No data") return end
+    if not c.inCombat then say(T"Not in combat") return end
 
     local parts = {}
     if c.active ~= nil then
-        parts[#parts + 1] = "Ход: " .. c.active.name
+        parts[#parts + 1] = T"Turn: " .. c.active.name
     end
     local mine = healthWord(c.me)
-    if mine then parts[#parts + 1] = "вы " .. mine end
+    if mine then parts[#parts + 1] = T"you " .. mine end
 
     -- The clock first, when there is one: a fight with a turn limit is lost by ignoring it,
     -- however well the fighting goes.
@@ -3052,16 +3050,16 @@ function M.combatSay()
         if e.canFight and (e.hp == nil or e.hp > 0) then fighters[#fighters + 1] = e end
     end
     if #fighters == 0 then
-        parts[#parts + 1] = "врагов не видно"
+        parts[#parts + 1] = T"no enemies in sight"
     else
-        parts[#parts + 1] = "врагов " .. #fighters
+        parts[#parts + 1] = T"enemies " .. #fighters
         for i = 1, math.min(#fighters, 5) do
             local e = fighters[i]
             local bits = { e.name }
             local hw = healthWord(e)
             if hw then bits[#bits + 1] = hw end
             if e.dir then bits[#bits + 1] = e.dir end
-            if e.dist then bits[#bits + 1] = string.format("%.0f м", e.dist) end
+            if e.dist then bits[#bits + 1] = string.format(T"%.0f m", e.dist) end
             parts[#parts + 1] = table.concat(bits, ", ")
         end
     end
@@ -3081,14 +3079,14 @@ function M.combatTick()
     if c.inCombat and not M.wasInCombat then
         M.wasInCombat = true
         M.lastTurn = nil
-        say("Бой. " .. #c.enemies .. " против " .. (#c.allies + 1))
+        say(T"Combat. " .. #c.enemies .. T" against " .. (#c.allies + 1))
         return true
     end
     if not c.inCombat then
         if M.wasInCombat then
             M.wasInCombat = false
             M.lastTurn = nil
-            say("Бой окончен")
+            say(T"Combat over")
         end
         return false
     end
@@ -3100,9 +3098,9 @@ function M.combatTick()
         local mineNow = c.active and c.me and c.active.name == c.me.name
         if mineNow then
             local mine = healthWord(c.me)
-            say("Ваш ход" .. (mine and (", " .. mine) or ""))
+            say(T"Your turn" .. (mine and (", " .. mine) or ""))
         else
-            say("Ход: " .. who)
+            say(T"Turn: " .. who)
         end
     end
     return true
@@ -3140,10 +3138,10 @@ function M.target()
     out.canFight = flags:find("CanFight", 1, true) ~= nil
     local myTeam = soft(function() return tostring(M.me().TurnBased.CombatTeam) end)
     local team = soft(function() return tostring(e.TurnBased.CombatTeam) end)
-    if out.party then out.side = "спутник"
+    if out.party then out.side = T"companion"
     elseif out.canFight and team ~= nil and myTeam ~= nil and team ~= myTeam then
-        out.side = "враг"
-    elseif not out.canFight then out.side = "объект" end
+        out.side = T"enemy"
+    elseif not out.canFight then out.side = T"object" end
 
     local me = M.me()
     local mp = me and positionOf(me)
@@ -3157,17 +3155,17 @@ function M.target()
 end
 
 local function targetPhrase(t)
-    local bits = { t.name or "цель" }
+    local bits = { t.name or T"target" }
     if t.side then bits[#bits + 1] = t.side end
     if t.hp ~= nil then
-        bits[#bits + 1] = (t.hp <= 0) and "повержен" or (t.hp .. " из " .. tostring(t.max))
+        bits[#bits + 1] = (t.hp <= 0) and T"down" or (t.hp .. T" of " .. tostring(t.max))
     end
     -- No clock bearing here either, for the same reason it left the scanner: there is no key
     -- that turns anyone, so "на десять" is a word and a half of listening that changes nothing
     -- the player can do. The distance is what decides whether a target is reachable.
-    if t.dist then bits[#bits + 1] = string.format("%.0f м", t.dist) end
+    if t.dist then bits[#bits + 1] = string.format(T"%.0f m", t.dist) end
     if t.index ~= nil and t.total ~= nil and t.total > 1 then
-        bits[#bits + 1] = (t.index + 1) .. " из " .. t.total
+        bits[#bits + 1] = (t.index + 1) .. T" of " .. t.total
     end
     return table.concat(bits, ", ")
 end
@@ -3198,7 +3196,7 @@ end
 
 function M.targetSay()
     local t = M.target()
-    if t == nil then say("Цель не выбрана") return nil end
+    if t == nil then say(T"No target selected") return nil end
     say(targetPhrase(t))
     return t
 end
@@ -3234,9 +3232,17 @@ local function junk(s)
     return s == "~" or s == "*" or s == "-" or s == ":"
 end
 
---- A distance reading rather than a word - "1,8 фут", "104 фут", "3 м".
+--- A distance reading rather than a word - "1,8 фут", "104 фут", "3 м", "5ft", "1.5m".
+---
+--- Recognised by shape, not by the unit. The unit is one of the few strings the game builds in
+--- code rather than storing behind a handle, so there is nothing to look up and matching the
+--- Russian word for a foot - which is what this did - made every English reading look like a
+--- word and restart the sentence on every centimetre walked.
 local function isDistance(s)
-    return s:find("^%d+[%.,]?%d*%s*фут") ~= nil or s:find("^%d+[%.,]?%d*%s*м$") ~= nil
+    local unit = s:match("^%d+[%.,]?%d*%s*(%S*)$")
+    if unit == nil then return false end
+    -- "фут" is six bytes, "ft" two, and a word long enough to be worth hearing is longer.
+    return #unit >= 1 and #unit <= 6 and unit:find("%d") == nil
 end
 
 function M.cursorParts()
@@ -3349,7 +3355,7 @@ end
 
 function M.cursorSay()
     local t = M.cursorText()
-    say(t or "Под курсором ничего")
+    say(t or T"Nothing under the cursor")
     return t
 end
 
@@ -3360,18 +3366,18 @@ end
 --- anywhere - the engine stops at reach instead of trying to stand where the enemy is.
 function M.approach()
     local t = M.target()
-    if t == nil then say("Цель не выбрана") return false end
+    if t == nil then say(T"No target selected") return false end
     local uuid = soft(function() return t.entity.Uuid.EntityUuid end)
     if type(uuid) ~= "string" or uuid == "" then
-        say("К этой цели нельзя подойти")
+        say(T"There is no walking to that target")
         return false
     end
     local body = soft(Ext.Json.Stringify, { cmd = "gotoObject", uuid = uuid })
     local r = try(function() Ext.Net.PostMessageToServer(M.CHANNEL, body) end)
-    if not r.ok then say("Не получилось подойти") return false end
+    if not r.ok then say(T"Could not walk there") return false end
     M.walkStarted(uuid, t.name)
-    say("Иду к: " .. tostring(t.name) ..
-        (t.dist and (", " .. string.format("%.0f м", t.dist)) or ""))
+    say(T"Walking to: " .. tostring(t.name) ..
+        (t.dist and (", " .. string.format(T"%.0f m", t.dist)) or ""))
     return true
 end
 
@@ -3386,13 +3392,21 @@ end
 
 local OBJECTIVE_NOISE = { ["[ForceUpdate]"] = true }
 
---- Does the string contain a lowercase Cyrillic letter?
+--- Does the string contain a lowercase letter?
 ---
---- Lua's lower() leaves Cyrillic alone, so case is checked against the UTF-8 byte ranges
---- directly: а-п is D0 B0..BF, р-я is D1 80..8F. Capitals mean a title, mixed case means a
---- phrase someone wrote to be read.
+--- Capitals mean a title, mixed case means a phrase someone wrote to be read, and that is the
+--- whole of how a region name is told from an objective and a marker label from a sentence.
+---
+--- This asked only about Cyrillic until 2026-08-07, which made it answer "no" for every string
+--- on a game in any other language: the region title test caught everything, and the roll
+--- panel's modifier list - which keeps whatever has a lowercase letter in it - kept nothing but
+--- the bare numbers. `%l` is ASCII, so the Cyrillic ranges are still checked by hand: а-п is
+--- D0 B0..BF, р-я is D1 80..8F, and ё is D1 91.
 local function hasLower(s)
-    return s:find("\208[\176-\191]") ~= nil or s:find("\209[\128-\143]") ~= nil
+    return s:find("%l") ~= nil
+        or s:find("\208[\176-\191]") ~= nil
+        or s:find("\209[\128-\143]") ~= nil
+        or s:find("\209\145") ~= nil
 end
 M.hasLower = hasLower
 
@@ -3581,7 +3595,7 @@ function M.questFold()
     if book.at ~= nil and book.at == M.questFoldAt then return end
     M.questFoldAt = book.at
 
-    local title = book.title or "Задание"
+    local title = book.title or T"Quest"
     local rows = {}
     for _, o in ipairs(book.tasks) do
         if not o.done and type(o.text) == "string" then
@@ -3702,12 +3716,20 @@ end
 ---
 --- The first character is dropped from each: the objective says "до передатчика" and the
 --- thing is called "Передатчик", so skipping the initial letter sidesteps both the case
---- difference and the fact that Lua's lower() does not touch Cyrillic. What remains is a
---- byte prefix, which also absorbs the case endings.
+--- difference and the fact that Lua's lower() does not touch anything outside ASCII. What
+--- remains is a byte prefix, which also absorbs the case endings.
+---
+--- Letters, not bytes, decide how long "long enough" is. A Cyrillic letter is two bytes and a
+--- Latin one is one, so the flat twelve-byte floor this used to have meant six letters in
+--- Russian and twelve in English - and twelve letters is longer than almost every English word
+--- an objective is built from, which quietly turned this whole fallback off outside Russian.
 local function stems(text)
     local out = {}
     for w in text:gmatch("[^%s,%.!%?:;%(%)«»\"]+") do
-        if #w >= 12 then out[#out + 1] = w:sub(3, 16) end
+        local wide = w:find("[\128-\255]") ~= nil
+        local floor, skip, take = 6, 2, 7
+        if wide then floor, skip, take = 12, 3, 14 end
+        if #w >= floor then out[#out + 1] = w:sub(skip, skip + take - 1) end
     end
     return out
 end
@@ -3829,9 +3851,9 @@ function M.questMarks(obj)
                     -- at - there is nothing there to press, and saying "вы на месте" about it
                     -- sounds like the task is done when the player has only reached the place
                     -- the story pointed to. Which is exactly what happened on the first walk.
-                    out[#out + 1] = { entity = e, name = label or "цель", pos = ep,
+                    out[#out + 1] = { entity = e, name = label or T"target", pos = ep,
                                       dist = dist, dir = bearing(dx, dz, yaw),
-                                      kind = (p[2] == "Trigger") and "точка на карте" or nil,
+                                      kind = (p[2] == "Trigger") and T"map point" or nil,
                                       mkind = p[2],
                                       anchor = row[i], marker = row[i], quest = oid }
                 end
@@ -4026,18 +4048,18 @@ end
 
 function M.objectiveSay(withHint)
     local hits, obj = M.findObjective()
-    if obj == nil then say("Задача не видна") return nil end
+    if obj == nil then say(T"No objective in sight") return nil end
     local parts = {}
     if obj.text then parts[#parts + 1] = obj.text end
     if obj.turns then parts[#parts + 1] = obj.turns end
     if hits ~= nil and #hits > 0 then
         parts[#parts + 1] = describe(hits[1])
         M.objectiveTarget = hits[1]
-        if withHint then parts[#parts + 1] = "ещё раз — идти" end
+        if withHint then parts[#parts + 1] = T"press again to walk" end
     else
         local away = M.elsewhereSay(M.questAwayOne)
-        parts[#parts + 1] = (away ~= nil) and ("цель в другой локации: " .. away)
-                            or "цель не найдена поблизости"
+        parts[#parts + 1] = (away ~= nil) and (T"the target is in another place: " .. away)
+                            or T"no target found nearby"
         M.objectiveTarget = nil
     end
     say(table.concat(parts, ". "))
@@ -4072,7 +4094,7 @@ M.QUEST_DIRECT = 80
 
 M.questText = nil
 
-local function dm(d) return string.format("%.0f м", d or 0) end
+local function dm(d) return string.format(T"%.0f m", d or 0) end
 
 --- Walk to one entry, and say the one thing that matters about the attempt.
 ---
@@ -4093,7 +4115,7 @@ function M.approachEntry(it, parts, note)
         return ok
     end
     if it == nil then
-        parts[#parts + 1] = "Не выбрано"
+        parts[#parts + 1] = T"Nothing selected"
         return speak(false)
     end
 
@@ -4109,10 +4131,10 @@ function M.approachEntry(it, parts, note)
         local door = route and M.portalEntry(route.first) or nil
         if door ~= nil then
             door.noRoute = true
-            local bits = it.name .. ": напрямую не пройти"
-            if route.hops > 1 then bits = bits .. ", переходов " .. route.hops end
+            local bits = it.name .. T": no direct route"
+            if route.hops > 1 then bits = bits .. string.format(T", %d crossings", route.hops) end
             parts[#parts + 1] = bits
-            parts[#parts + 1] = "иду к переходу"
+            parts[#parts + 1] = T"walking to the crossing"
             return M.approachEntry(door, parts, note)
         end
     end
@@ -4127,7 +4149,7 @@ function M.approachEntry(it, parts, note)
             -- moment a player is most likely to think it did: the walk ended, the layer went
             -- quiet, and there is no button to press. So name what the place is, and hand
             -- over the only thing that helps next - what is actually usable around here.
-            parts[#parts + 1] = "Вы в этой точке. Это область на карте, нажимать здесь нечего"
+            parts[#parts + 1] = T"You are at this point. It is an area on the map, there is nothing to press here"
             local near = M.scan(20, true)
             local best = nil
             for i = 1, #(near or {}) do
@@ -4135,13 +4157,13 @@ function M.approachEntry(it, parts, note)
                 if n.usable and (best == nil or n.dist < best.dist) then best = n end
             end
             if best ~= nil then
-                parts[#parts + 1] = "Рядом: " .. best.name .. ", " .. dm(best.dist) ..
+                parts[#parts + 1] = T"Nearby: " .. best.name .. ", " .. dm(best.dist) ..
                                     ", " .. tostring(best.dir)
             end
         elseif M.canInteract(it.entity, d) then
-            parts[#parts + 1] = "Вы на месте, действие — кнопка A"
+            parts[#parts + 1] = T"You are there, action - button A"
         else
-            parts[#parts + 1] = "Вы на месте"
+            parts[#parts + 1] = T"You are there"
         end
         return speak(true)
     end
@@ -4166,35 +4188,35 @@ function M.approachEntry(it, parts, note)
         -- is on real ground, the engine paths to it and stops at reach. Which is also what
         -- exploring is: go to what you can hear, listen to what came into range, go again.
         if it.anchor == nil then
-            parts[#parts + 1] = "Туда идти не по чему"
+            parts[#parts + 1] = T"There is no ground that way"
             return speak(false)
         end
         local target, err = M.stepTarget(it)
         if target == nil then
             if far then parts[#parts + 1] = where end
-            parts[#parts + 1] = err or "В ту сторону не за что зацепиться"
+            parts[#parts + 1] = err or T"Nothing to head for that way"
             return speak(false)
         end
         going = target.name
         msg = { cmd = "gotoObject", uuid = target.uuid }
         if far then
-            tail = where .. ". Иду в ту сторону: " .. target.name .. ", " .. dm(target.dist)
+            tail = where .. T". Walking that way: " .. target.name .. ", " .. dm(target.dist)
         else
-            tail = "Иду " .. tostring(it.dir) .. ": " .. target.name .. ", " .. dm(target.dist) ..
+            tail = T"Walking " .. tostring(it.dir) .. ": " .. target.name .. ", " .. dm(target.dist) ..
                    -- One hop is not the journey: saying what is left to the region is what
                    -- turns a series of presses into progress the player can hear.
-                   (target.left and (", до участка " .. dm(target.left)) or "")
+                   (target.left and (T", to the area " .. dm(target.left)) or "")
         end
     else
         msg = { cmd = "gotoObject", uuid = uuid }
-        tail = "Иду: " .. it.name .. ", " .. dm(d) .. ", " .. tostring(it.dir)
+        tail = T"Walking: " .. it.name .. ", " .. dm(d) .. ", " .. tostring(it.dir)
     end
 
     local body = soft(Ext.Json.Stringify, msg)
     local r = try(function() Ext.Net.PostMessageToServer(M.CHANNEL, body) end)
     if not r.ok then
         _P("[nav] approach failed: " .. tostring(r.error))
-        parts[#parts + 1] = "Не получилось пойти"
+        parts[#parts + 1] = T"Could not start walking"
         return speak(false)
     end
     M.walkStarted(msg.uuid, going)
@@ -4265,19 +4287,19 @@ function M.questGo()
                 if (view[i].dist or 0) < (near.dist or 0) then near = view[i] end
             end
             if near ~= view[1] then
-                parts[#parts + 1] = "Ещё " .. (#view - 1) .. ", ближайшая: " .. near.name ..
-                                    ", " .. dm(near.dist)
+                parts[#parts + 1] = string.format(T"%d more, nearest: %s", #view - 1,
+                                                  near.name .. ", " .. dm(near.dist))
             else
-                parts[#parts + 1] = "Ещё " .. (#view - 1)
+                parts[#parts + 1] = string.format(T"%d more", #view - 1)
             end
         end
         -- And the ones this level cannot show at all. Said after the list rather than instead
         -- of it: it is not somewhere to walk today, it is which way the story leaves from here.
         local away = M.elsewhereSay(M.questAway)
-        if away ~= nil then parts[#parts + 1] = "Есть цели в других локациях: " .. away end
+        if away ~= nil then parts[#parts + 1] = T"There are targets in other places: " .. away end
         if obj ~= nil and obj.fromSaved and not M.savedWarned then
             M.savedWarned = true
-            parts[#parts + 1] = "По памяти, откройте журнал чтобы обновить"
+            parts[#parts + 1] = T"From memory - open the journal to refresh it"
         end
         say(table.concat(parts, ". "))
         return true
@@ -4288,7 +4310,7 @@ function M.questGo()
     M.rebuildView()
 
     if obj == nil then
-        say("Задача не видна")
+        say(T"No objective in sight")
         return false
     end
 
@@ -4318,18 +4340,18 @@ function M.questGo()
     if #parts == 0 and cat ~= nil then parts[#parts + 1] = cat end
 
     if oid == nil then
-        parts[#parts + 1] = "эта задача не найдена в списке заданий игры"
+        parts[#parts + 1] = T"this objective is not in the game's own quest list"
     elseif row == nil or #row < 3 then
-        parts[#parts + 1] = "у этой задачи нет точки на карте"
+        parts[#parts + 1] = T"this objective has no point on the map"
     else
         -- Which location, when the marker says so. This used to end at "not in this one",
         -- which is true, useless, and indistinguishable from the layer having lost the thread;
         -- the marker has carried the level name all along.
         local away = M.elsewhereSay(M.questAway)
         if away ~= nil then
-            parts[#parts + 1] = "цель этой задачи в другой локации: " .. away
+            parts[#parts + 1] = T"this objective's target is in another place: " .. away
         else
-            parts[#parts + 1] = "цель этой задачи не в этой локации"
+            parts[#parts + 1] = T"this objective's target is not in this place"
         end
     end
 
@@ -4337,7 +4359,7 @@ function M.questGo()
     -- the only thing the game still says about where the story lies.
     local mhits = M.markerHits()
     if mhits ~= nil and #mhits > 0 then
-        parts[#parts + 1] = "ближайшая метка: " .. describe(mhits[1])
+        parts[#parts + 1] = T"nearest marker: " .. describe(mhits[1])
     end
     say(table.concat(parts, ". "))
     return false
@@ -4362,7 +4384,7 @@ function M.questTick()
     M.questAnnounced = text
     if text == nil then return false end
     M.questText = text
-    local parts = { "Задача" }
+    local parts = { T"Objective" }
     -- Which section of the journal it came from, said at the one moment it is worth a word: a
     -- new objective has just appeared and the player has no idea whether the story moved or an
     -- errand did.

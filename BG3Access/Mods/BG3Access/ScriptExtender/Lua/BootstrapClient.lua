@@ -14,14 +14,20 @@
 local DEV = "A11y/"
 
 -- Load order is a dependency order: a11y-nav and a11y-pad read _G.A11y at load time, so the
--- menu module has to be in place before them.
--- The four *data modules are data, not code: they depend on nothing, everything that reads them
+-- menu module has to be in place before them, and a11y-menu reads _G.Lang, so language comes
+-- before everything.
+-- The data modules are data, not code: they depend on nothing, everything that reads them
 -- checks for nil first, and they are generated rather than written - so they load first and are
 -- marked optional. A missing module normally takes the whole layer down with it, which is right
 -- for code and wrong for a table: losing the journal index costs the quest pointer, losing the
 -- place index costs the place names, losing the ready-check index costs the warning before a
--- point of no return - and losing the layer costs the game.
+-- point of no return - and losing the layer costs the game. A missing translation is the same
+-- kind of loss: the layer then speaks English, which is the language it is written in.
+--
+-- Adding a language is one more optional line here, next to a11y-ru.
 local ORDER = {
+    { name = "a11y-lang",      global = "Lang",      optional = true },
+    { name = "a11y-ru",        global = "LangRU",    optional = true },
     { name = "a11y-questdata", global = "QuestData", optional = true },
     { name = "a11y-placedata", global = "PlaceData", optional = true },
     { name = "a11y-portaldata", global = "PortalData", optional = true },
@@ -167,7 +173,11 @@ local function startLayer()
     -- Queued rather than interrupting. This fires during the loading screen, and the loading
     -- screen carries the game's own tip - the one piece of writing there, and the layer used to
     -- cut it in half to say a line about itself.
-    if G.A11y ~= nil and G.A11y.say ~= nil then pcall(G.A11y.say, "Доступность включена", false) end
+    if G.A11y ~= nil and G.A11y.say ~= nil then
+        local hello = "Accessibility on"
+        if G.Lang ~= nil then hello = G.Lang.t(hello) end
+        pcall(G.A11y.say, hello, false)
+    end
     return true
 end
 

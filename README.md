@@ -25,8 +25,9 @@ downloading done by hand. Either way the installer offers to fetch the
 perfectly and runs no mod code at all.
 
 **[PLAYING.md](PLAYING.md)** is the guide: what you need, the keys, and what to do when it
-is silent. Two things worth knowing before you start — the layer **speaks Russian**, and it
-needs a **game controller** plugged in.
+is silent. Two things worth knowing before you start — the layer **speaks the language the game
+is being played in** (English and Russian are written; everything else falls back to English),
+and it needs a **game controller** plugged in.
 
 The rest of this file is about the source.
 
@@ -46,6 +47,26 @@ The rest of this file is about the source.
 
 `lua/a11y-*.lua` are the layer's modules: `pad` (input), `nav` (navigation),
 `menu` (screen readers), `model`, `mouse`, plus `nav-server` on the server context.
+
+## Languages
+
+Every sentence the layer speaks is written in English in the source, inside `T"..."`, and
+translated on the way out by `lua/a11y-lang.lua`. The language is the game's own
+(`GlobalSwitches.Language`), overridable by a two-letter code in
+`<Script Extender>/A11y/lang.txt`. A string with no translation is said in English, so a
+half-finished language is a layer that speaks a mixture rather than one that goes quiet.
+
+| Path | What it is |
+| --- | --- |
+| `lua/a11y-lang.lua` | The mechanism: which language, plural rules, and the game's own strings the layer has to recognise |
+| `lua/a11y-ru.lua` | English → Russian. Adding a language means copying this file |
+| `tools/check-lang.ps1` | What has drifted: English with no translation, translations for English that is gone, format strings whose placeholders no longer match |
+
+`a11y-lang.lua` also holds the handles for the strings the layer matches **against** the game —
+the options row that carries the control scheme, the buttons under a dialogue box, the camp
+supply label. Those were hard-coded in Russian until 0.5.0, which is why the control-scheme
+repair silently did nothing on any copy of the game that was not Russian. A handle resolves to
+whatever the player is looking at, in all fifteen of the game's languages.
 
 ## Install
 
