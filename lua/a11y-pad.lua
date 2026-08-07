@@ -271,6 +271,20 @@ end
 -- behind them is the same and only its subject changes. End asks "what does all this add up
 -- to": the objective in the world, the character sheet on a screen. Delete asks "tell me
 -- more about the thing that is selected": close on it out there, read its description here.
+-- Insert is not here, and this is the reason, because it will look like an omission otherwise:
+-- **Insert is NVDA's modifier key.** The screen reader claims it below the game, so nothing
+-- bound to it ever reached this layer - and three things were bound to it for weeks. Repeating
+-- the last line, reading a screen, and asking how the fight was going were all unreachable for
+-- every NVDA user, which is very nearly every user this is written for. JAWS takes Insert too.
+--
+-- The lesson is bigger than the key: a binding cannot be assumed to arrive just because the
+-- game receives it. Test a new one with the screen reader running, or it is a feature written
+-- for nobody. `M.unknownKeys` prints what does arrive - press the key and read the log.
+--
+-- Pause is under the same suspicion and has not been confirmed either way: the player's
+-- keyboard has six keys in that block - PageUp, PageDown, Home, End, Delete, Insert - and no
+-- Pause among them. If it turns out to be unreachable as well, `where` needs a home or needs
+-- retiring, and Alt+Pause is already covered by the left stick.
 M.KEYS = {
     PAGEUP = "prev", PAGEDOWN = "next",     -- with Alt: previous / next category
     -- Home asks "how is the walk going", Alt+Home starts one. That way round because of which
@@ -279,9 +293,9 @@ M.KEYS = {
     -- easier press. Stopping is no longer a key at all: the left stick does it (M.axisTick).
     HOME = "progress",                      -- how far to the target / top of the screen
     END = "quest",                          -- the objective, or the summary of the screen
+                                            -- with Alt: how the fight is going
     DELETE = "range", DEL = "range",        -- how far the scanner looks / details of a screen
-    INSERT = "read",                        -- the fight, or the screen, or the last line again
-    PAUSE = "where",
+    PAUSE = "where",                        -- unconfirmed: see above
 }
 
 -- Alt is a modifier here and a game key everywhere else - BG3 highlights loot while it is
@@ -316,6 +330,10 @@ ALT_CMD["progress"] = "goto"
 -- Stopping by hand, kept as a fallback to the stick. It is on "where am I" because that is the
 -- other key about standing still, and because it is not one that is pressed by accident.
 ALT_CMD["where"] = "stop"
+-- How the fight is going, on the modifier of the key that already asks "what does all this add
+-- up to". It took this slot because Insert - where it used to live - turned out to be NVDA's
+-- own modifier and reached the layer never.
+ALT_CMD["quest"] = "fight"
 -- Delete used to walk to the game's own target - the one its d-pad cycle has picked - which
 -- in a fight is a different thing from the scanner's selection and out of one is usually the
 -- same thing said twice. So the key now carries how far the scanner looks, which is asked
@@ -898,6 +916,11 @@ local function perform(cmd)
         if what ~= nil then parts[#parts + 1] = what end
         parts[#parts + 1] = M.plural(#a.texts, "line")
         say(table.concat(parts, ", "))
+    elseif cmd == "fight" then
+        -- Only what a list cannot answer: whose turn it is, how you are, how many are left.
+        -- Who they individually are is the "враги" category, walked one at a time like
+        -- everything else. On a screen there is no fight, so the key keeps its plain meaning.
+        if nav ~= nil then nav.combatSay() else perform("summary") end
     elseif cmd == "repeat" then
         if M.lastSaid then A.say(M.lastSaid, true) else say(T"nothing to repeat") end
     elseif cmd == "next" then

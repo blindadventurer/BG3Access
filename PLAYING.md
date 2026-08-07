@@ -159,7 +159,16 @@ the things standing around you; on a panel it is the lines of the panel.
 doors, items. This is how a room gets built up in your head without sitting through thirty
 barrels first.
 
-One of those kinds is **unexplored** — the named places of this level you have never stood
+Two of those kinds only exist in a fight: **enemies** and **allies**. Outside combat they are
+empty and the category key steps straight past them, so they cost you nothing out in the world.
+Inside one, **enemies** is the list worth having: only what is actually trying to kill you —
+a fight's roster also contains scenery, which joins with initiative −20 and is not a threat —
+with each one's health and whose turn it is said in the row, and the dead left out. It is built
+from the fight's own roster rather than from what is near, so an enemy standing further off than
+the scanner looks is still in the list. Everything else works on it unchanged: step with Page Up
+and Page Down, send your character with the walk key, exactly as with **creatures**.
+
+Another of those kinds is **unexplored** — the named places of this level you have never stood
 in, nearest first, and it is how a level gets walked without a map: go to the nearest one,
 listen on the way, go again. It shrinks as you explore, and what is left after the named places
 are gone is the anonymous ground between them ("area").
@@ -231,10 +240,17 @@ the setting and the game's whole explanation of it.
 **Alt + Delete** — walk to the target the game itself has selected. In a fight that is a
 different thing from the scanner's selection, which is why it has its own key.
 
-**Insert** — read what is worth reading right now. In a fight, the fight. On a panel, the panel
-in full. Out in the world, the last line again.
+**Alt + End** — how the fight is going: whose turn it is, how you are, how many enemies are
+left. Who they individually are is the **enemies** category, walked one entry at a time like
+everything else.
 
-**Pause** — where you are: the screen, the section of it, the control under the cursor.
+*This used to be on Insert, and Insert is NVDA's own modifier key — the screen reader takes it
+before the game ever sees it, so nothing on it worked for anyone using NVDA or JAWS. If you find
+a key in this list that does nothing, that is worth reporting: it is the same class of bug.*
+
+**Pause** — where you are: the screen, the section of it, the control under the cursor. Not
+every keyboard has this key, and on the ones that do it is usually outside the six-key block
+with Home and End.
 
 **Alt + Pause** — stop walking.
 

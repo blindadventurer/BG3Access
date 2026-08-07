@@ -618,6 +618,18 @@ end
 -- coarse on purpose; a category that lies is worse than one that is broad.
 M.CATEGORIES = {
     { key = "all",     name = T"everything" },
+    -- The fight as two lists instead of as a speech.
+    --
+    -- Both are empty outside combat, and categoryStep already skips an empty category, so out
+    -- there they cost the player nothing - not a press, not a word. Inside one they are walked
+    -- with the same two keys as everything else, which is the whole point: how many enemies you
+    -- hear about is your decision, and you can stop after the nearest one.
+    --
+    -- What this replaces: a key that said the fight and then listed five enemies in one breath.
+    -- That was the same wall the world reader has never had, standing in the one place where
+    -- being unable to stop listening costs the most.
+    { key = "enemies", name = T"enemies" },
+    { key = "allies",  name = T"allies" },
     { key = "markers", name = T"markers" },
     { key = "quest",   name = T"objective" },
     -- Named places, and the fast-travel shrines among them. Next to "задача" on purpose: the
@@ -773,6 +785,12 @@ function M.rebuildView()
     -- metres away and hold nothing the scan would ever return.
     if cat.key == "explore" then
         out = M.exploreView()
+    elseif cat.key == "enemies" or cat.key == "allies" then
+        -- Built from the fight's own roster rather than filtered out of the sweep, for the same
+        -- reason "задача" is: a participant can stand outside the scan radius, and
+        -- CombatState.Participants is the only authority on who is in the fight at all -
+        -- GetAllEntitiesWithComponent("CombatParticipant") comes back empty on the client.
+        out = M.combatView(cat.key)
     elseif cat.key == "places" then
         out = M.placeView()
     elseif cat.key == "quest" then
@@ -2195,6 +2213,11 @@ M.peek = peek
 local function describe(it)
     local parts = { it.name }
     if it.kind then parts[#parts + 1] = it.kind end
+    -- A fight's rows carry these where a scanned object carries a kind. Health belongs in the
+    -- row and not behind the details key: it is what the next decision is taken on, and asking
+    -- for it one enemy at a time would be the same wall reached by a longer road.
+    if it.turn then parts[#parts + 1] = T"their turn" end
+    if it.note then parts[#parts + 1] = it.note end
     if it.looted then parts[#parts + 1] = T"empty"
     elseif it.unopened then parts[#parts + 1] = T"not searched" end
     local inside = soft(function() return peek(it) end)
@@ -3020,6 +3043,36 @@ local function healthWord(rec)
     return rec.hp .. T" of " .. tostring(rec.max)
 end
 
+--- One side of a fight, as scanner entries - so the ordinary keys walk it.
+---
+--- Declared here rather than beside the other views because it needs `healthWord` and
+--- `M.combat`, both of which live in this half of the file; `rebuildView` reaches it through M,
+--- which is resolved when it is called and not when it is written.
+function M.combatView(key)
+    local c = soft(function() return M.combat() end)
+    if c == nil or not c.inCombat then return {} end
+    local src = (key == "enemies") and c.enemies or c.allies
+    local out = {}
+    for i = 1, #src do
+        local r = src[i]
+        -- Half a roster is scenery: reservoirs and tubers join a fight with initiative -20 and
+        -- no CanFight. Reading them out as enemies buries the four that are trying to kill you.
+        -- The dead are out for the same reason - what is left of a fight is who is still in it.
+        if r.canFight and (r.hp == nil or r.hp > 0) then
+            out[#out + 1] = {
+                entity = r.entity, name = r.name,
+                dist = r.dist or 0, dir = r.dir,
+                turn = r.active, note = healthWord(r),
+            }
+        end
+    end
+    -- Nearest first, like every other category. Initiative order is the other candidate and is
+    -- the wrong one: it answers "when do they act", and the question asked from this list is
+    -- "who can I reach" - which is also what the go key does with the entry under the cursor.
+    table.sort(out, function(a, b) return (a.dist or 0) < (b.dist or 0) end)
+    return out
+end
+
 --- The situation, out loud.
 function M.combatSay()
     local c = M.combat()
@@ -3046,16 +3099,11 @@ function M.combatSay()
         parts[#parts + 1] = T"no enemies in sight"
     else
         parts[#parts + 1] = T"enemies " .. #fighters
-        for i = 1, math.min(#fighters, 5) do
-            local e = fighters[i]
-            local bits = { e.name }
-            local hw = healthWord(e)
-            if hw then bits[#bits + 1] = hw end
-            if e.dir then bits[#bits + 1] = e.dir end
-            if e.dist then bits[#bits + 1] = string.format(T"%.0f m", e.dist) end
-            parts[#parts + 1] = table.concat(bits, ", ")
-        end
     end
+    -- And no further. This used to name the nearest five here, health and bearing and distance
+    -- each, which is a paragraph arriving at the moment a player has the least attention to
+    -- spare for one. Who they are is the "враги" category now, walked one at a time - so this
+    -- answers only what a list cannot: whose turn it is, how you are, how many are left.
     say(table.concat(parts, ". "))
     return c
 end
