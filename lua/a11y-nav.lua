@@ -25,8 +25,15 @@ local M = {}
 local try, soft = A.try, A.soft
 local Lang, T = A.Lang, A.T
 
-local function say(text)
-    if _G.Pad and _G.Pad.say then _G.Pad.say(text, true) else A.say(text, true) end
+--- Interrupting is the default here and stays it: most of what this file says is an answer to
+--- a key just pressed, or the target cursor moving, where the newest line is the only one worth
+--- hearing and the previous one is already stale.
+---
+--- What must not interrupt is anything the world raises on its own while the player is
+--- listening to something else. Passing `false` queues it instead.
+local function say(text, interrupt)
+    if interrupt == nil then interrupt = true end
+    if _G.Pad and _G.Pad.say then _G.Pad.say(text, interrupt) else A.say(text, interrupt) end
 end
 M.say = say
 
@@ -1636,7 +1643,9 @@ function M.placeTick()
     M.placeNow = name
     if name == nil or name == M.placeSaid then return false end
     M.placeSaid = name
-    say(T"Place: " .. name)
+    -- Queued: walking into a place is the world's news, not an answer to a press, and it lands
+    -- while the player is listening to whatever they were already listening to.
+    say(T"Place: " .. name, false)
     return true
 end
 
@@ -1725,7 +1734,9 @@ function M.cameraTick()
         M.camHinted = true
         line = line .. T". D-pad down or up brings the view back"
     end
-    say(line)
+    -- Queued for the same reason as the place and the objective: the camera drifting is not an
+    -- answer to anything the player did, and it is a poor trade to cut a line of dialogue for it.
+    say(line, false)
     return true
 end
 
@@ -4433,7 +4444,10 @@ function M.questTick()
     if cat ~= nil then parts[#parts + 1] = cat end
     parts[#parts + 1] = text
     if obj.turns then parts[#parts + 1] = obj.turns end
-    say(table.concat(parts, ". "))
+    -- Queued, never interrupting. Nobody presses a key to hear this: it arrives because the
+    -- story moved, which is as likely to happen mid-sentence as anywhere else - and the sentence
+    -- it cut into on 2026-08-08 was the loading screen's own tip, the one piece of writing there.
+    say(table.concat(parts, ". "), false)
     return true
 end
 

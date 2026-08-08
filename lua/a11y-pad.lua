@@ -6827,7 +6827,18 @@ local function readerTick()
     -- character creation, which is a screen inside a running session: "Манекен, спутник,
     -- 2 из 2, назад, 1 м" between two rows of the character sheet.
     local nav = _G.Nav
-    if nav ~= nil and not M.screenUp then
+    -- And only while there is a character to have a world around. At the main menu and through
+    -- a loading screen there is none, and every tick below is about the played character's
+    -- surroundings.
+    --
+    -- Most of them answer nil on their own and were harmless. questTick is not: it falls back
+    -- to the quest store kept on disk, so with no session at all the layer announced the
+    -- objective from the last save - "задача, осмотреть руины" - at every launch, over the
+    -- loading screen's own tip, before anything had been loaded. Reported 2026-08-08.
+    --
+    -- ClientControl marks exactly one entity, so asking is a single component query and not a
+    -- search; the ticks below ask for it themselves anyway.
+    if nav ~= nil and not M.screenUp and soft(function() return nav.me() ~= nil end) then
         -- Did the walk the layer ordered actually get anywhere: arrival, or a stop short of
         -- it. Silence after "иду" is the same to a listener as a layer that has died.
         soft(function() nav.walkTick() end)
