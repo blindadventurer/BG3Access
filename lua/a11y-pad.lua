@@ -5853,20 +5853,47 @@ function M.modPrompts(node)
 end
 
 --- One mod, said the way a player chooses between them.
-function M.modLine(rec, index, count)
+--- One row of the mod list. `tab` is the screen's own ActiveTabID.
+---
+--- The two tabs are different screens wearing the same list, and reading them the same way is
+--- what made the installed one hard to use. On **Installed** the only question is which mods
+--- are on: downloads, rating and file size are facts about choosing a mod, and the choosing was
+--- done. Four extra facts per row is not detail, it is four things to listen past on every row
+--- while looking for the word that changes.
+---
+--- Worth knowing where "on" comes from, because there is no text for it anywhere: the state is
+--- an `ls:LSCheckBox` named `modEnableCheckBox` bound `IsChecked="{Binding EnabledCurrent}"`,
+--- and its whole template is one `Image`. A sighted player sees a tick; the tree carries not a
+--- word. Same for the update: an `Image` shown by a trigger on `VersionState == "Older"`.
+--- (`Mods/ModBrowser/GUI/Pages/ModBrowserInstalled_c.xaml`, read out of Game.pak 2026-08-08.)
+function M.modLine(rec, index, count, tab)
+    local installed = (tab == "Installed")
     local parts = { str(rec.Name) }
-    if rec.IsInstalled == true then
+
+    -- First after the name, and by itself. On the installed tab "installed," in front of it was
+    -- a word that is true of every row there and pushed the one that is not further back.
+    if installed then
+        parts[#parts + 1] = (rec.EnabledCurrent == true) and T"on" or T"off"
+    elseif rec.IsInstalled == true then
         parts[#parts + 1] = (rec.EnabledCurrent == true) and T"installed, on" or T"installed, off"
     else
         parts[#parts + 1] = T"not installed"
     end
+
+    -- The game draws this as a second icon and never says it. It belongs on the installed tab,
+    -- where it is the other thing a player is looking down the list for.
+    if str(rec.VersionState) == "Older" then parts[#parts + 1] = T"update available" end
     if rec.IsDeprecated == true then parts[#parts + 1] = T"deprecated" end
-    local d = bigNumber(rec.TotalDownloads)
-    if d ~= nil then parts[#parts + 1] = string.format(T"%s downloads", d) end
-    local sz = fileSize(rec.FileSize)
-    if sz ~= nil then parts[#parts + 1] = sz end
-    local r = tonumber(rec.PositiveRating)
-    if r ~= nil and r > 0 then parts[#parts + 1] = string.format(T"rating %d", r) end
+
+    if not installed then
+        local d = bigNumber(rec.TotalDownloads)
+        if d ~= nil then parts[#parts + 1] = string.format(T"%s downloads", d) end
+        local sz = fileSize(rec.FileSize)
+        if sz ~= nil then parts[#parts + 1] = sz end
+        local r = tonumber(rec.PositiveRating)
+        if r ~= nil and r > 0 then parts[#parts + 1] = string.format(T"rating %d", r) end
+    end
+
     if rec.Version ~= nil then parts[#parts + 1] = T"version " .. str(rec.Version) end
     if count ~= nil and count > 1 and index ~= nil then
         parts[#parts + 1] = index .. T" of " .. count
@@ -5899,12 +5926,21 @@ function M.modState(node)
         if t ~= nil and A.looksLikeText(t) and t ~= "[ForceUpdate]" then account = t end
     end
 
+    -- How many of them are on. Counted here because the answer is the whole reason the installed
+    -- tab exists, and stepping seven rows to work it out is not an answer - "3 мода, включено 2"
+    -- says before the first press whether anything needs doing at all.
+    local on = 0
+    for i = 1, #recs do
+        if recs[i] ~= nil and recs[i].EnabledCurrent == true then on = on + 1 end
+    end
+
     return {
         tab = str(scr.ActiveTabID),
         pages = tonumber(scr.PageCount),
         details = scr.InDetailsView == true,
         updating = scr.IsUpdatingModList == true,
         count = #recs,
+        enabled = on,
         index = index,
         rec = index and recs[index] or nil,
         account = account,
@@ -6064,7 +6100,10 @@ function M.modLines(node)
     if list == nil then return nil end
     local recs = recordsOf(list)
     local out = {}
-    for i = 1, #recs do out[#out + 1] = M.modLine(recs[i], i, #recs) end
+    -- The tab decides what a row is worth saying; `scr` is this screen's own record and is
+    -- already in hand.
+    local tab = (type(scr) == "table") and str(scr.ActiveTabID) or nil
+    for i = 1, #recs do out[#out + 1] = M.modLine(recs[i], i, #recs, tab) end
     return out
 end
 
@@ -6089,7 +6128,7 @@ function M.modDetails(node)
     if st.count > 0 then out[#out + 1] = M.plural(st.count, "mod") end
     if st.pages ~= nil and st.pages > 1 then out[#out + 1] = M.plural(st.pages, "page") end
     if st.account ~= nil then out[#out + 1] = st.account end
-    if st.rec ~= nil then out[#out + 1] = M.modLine(st.rec, st.index, st.count) end
+    if st.rec ~= nil then out[#out + 1] = M.modLine(st.rec, st.index, st.count, st.tab) end
     local prompts = M.modPrompts(node)
     if #prompts > 0 then out[#out + 1] = T"Actions: " .. table.concat(prompts, ", ") end
     return out
@@ -6153,6 +6192,13 @@ function M.modTick(widget)
     if first then
         local head = { (st.tab == "Installed") and T"Installed" or T"Browse" }
         if st.count > 0 then head[#head + 1] = M.plural(st.count, "mod") end
+        -- And how many of them are switched on, which on this tab is the question the screen is
+        -- open for. Said only when it is not all of them: "8 модов, включено 8" spends a phrase
+        -- to say nothing, while "8 модов, включено 6" is the whole reason to start stepping.
+        if st.tab == "Installed" and st.enabled ~= nil and st.count > 0
+           and st.enabled < st.count then
+            head[#head + 1] = string.format(T"%d on", st.enabled)
+        end
         if st.pages ~= nil and st.pages > 1 then head[#head + 1] = M.plural(st.pages, "page") end
         pend(table.concat(head, ", "))
         -- Before the list and not after it: without an account the browser is something to
@@ -6163,7 +6209,7 @@ function M.modTick(widget)
     -- The mod ahead of the button strip. The strip is four phrases long and the same four
     -- every time; the row is what the player came for, and putting it last means waiting
     -- through the strip to hear it.
-    if rec ~= nil then pend(M.modLine(rec, st.index, st.count)) end
+    if rec ~= nil then pend(M.modLine(rec, st.index, st.count, st.tab)) end
     if first then
         local prompts = M.modPrompts(widget.node)
         if #prompts > 0 then pend(T"Actions: " .. table.concat(prompts, ", ")) end
