@@ -117,16 +117,25 @@ if ($Pak) {
 
         $info = $mx.SelectSingleNode("//node[@id='ModuleInfo']")
         if (-not $info) { Write-Error "$($meta.FullName): no ModuleInfo node" }
-        foreach ($need in @("PublishHandle", "StartupLevelName", "FileSize")) {
-            if (-not $info.SelectSingleNode("attribute[@id='$need']")) {
-                Write-Error ("$($meta.FullName): ModuleInfo has no $need - this is the " +
-                             "pre-Patch-7 meta format and the game will never list the module")
-            }
-        }
-        # The one that actually broke us: these belong inside ModuleInfo, not beside it.
+
+        # The one that actually broke us, and the only one the evidence supports: these belong
+        # inside ModuleInfo, not beside it. A module Patch 8 cannot parse is never listed and
+        # never explains itself.
         if (-not $info.SelectSingleNode("children/node[@id='PublishVersion']")) {
             Write-Error ("$($meta.FullName): PublishVersion is not a child of ModuleInfo - " +
                          "Patch 8 nests it there, and a module it cannot parse is never listed")
+        }
+
+        # These are the shape Larian's own modules use, and this repo holds itself to it - but
+        # they are **not** what the game requires, and saying so here would be teaching a fault
+        # that does not exist. Measured 2026-08-08: a current Nexus mod with meta format 4.0.0.49,
+        # no PublishHandle, no FileSize and `Version` in place of `Version64` is accepted by the
+        # game. Strict for what we ship, honest about why.
+        foreach ($need in @("PublishHandle", "StartupLevelName", "FileSize")) {
+            if (-not $info.SelectSingleNode("attribute[@id='$need']")) {
+                Write-Error ("$($meta.FullName): ModuleInfo has no $need. The game tolerates " +
+                             "its absence, but this repo ships the Patch 8 shape - add it")
+            }
         }
 
         $out = & $Divine -g bg3 -a create-package -s $srcRoot -d $dstPak -l warn 2>&1

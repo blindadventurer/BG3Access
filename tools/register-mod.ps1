@@ -35,6 +35,7 @@
 param(
     [string]$Pak,
     [string]$Meta,
+    [string]$Install,       # a .pak anywhere on disk: copy it into Mods\ and switch it on
     [switch]$Remove,
     [switch]$List,
     [string]$Divine
@@ -73,7 +74,28 @@ if ($List) {
     return
 }
 
-if (-not $Pak -and -not $Meta) { Write-Error "pass -Pak <name.pak>, -Meta <meta.lsx> or -List" }
+# --- installing one from outside ---------------------------------------------------------------
+
+# The copy is here rather than left to the player because the two halves have to agree: an entry
+# in modsettings.lsx naming a module whose pak is not in Mods\ is the exact state the game
+# silently repairs by deleting the entry, and that repair is indistinguishable from the game
+# refusing the mod. So the file lands first, and only then is it read and switched on.
+if ($Install) {
+    if (-not (Test-Path $Install)) { Write-Error "no pak at $Install" }
+    if (Get-Process bg3, bg3_dx11 -ErrorAction SilentlyContinue) {
+        Write-Error ("Baldur's Gate 3 is running. It holds every pak in Mods\ open while it " +
+                     "runs - switched on or not - so nothing can be copied in until it quits.")
+    }
+    New-Item -ItemType Directory -Force $modsDir | Out-Null
+    $leaf = Split-Path $Install -Leaf
+    Copy-Item $Install (Join-Path $modsDir $leaf) -Force
+    Write-Host ("copied -> Mods\{0}  ({1:N0} KB)" -f $leaf, ((Get-Item $Install).Length / 1KB))
+    $Pak = $leaf
+}
+
+if (-not $Pak -and -not $Meta) {
+    Write-Error "pass -Install <path>, -Pak <name.pak>, -Meta <meta.lsx> or -List"
+}
 
 # --- what the module says it is -----------------------------------------------------------------
 
@@ -146,15 +168,28 @@ $handle  = MetaAttr "PublishHandle"
 
 if (-not $folder -or -not $uuid) { Write-Error "$metaFrom names no Folder/UUID" }
 
-# The gate. Enabling a module the game cannot parse writes an entry that is deleted at the next
-# startup, and the deletion looks exactly like the game refusing the mod - so say the real thing
-# instead, before writing anything.
-if (-not (MetaHas "PublishHandle") -or -not (MetaHas "StartupLevelName") -or
-    $null -eq $info.SelectSingleNode("children/node[@id='PublishVersion']")) {
-    Write-Error ("$name is packaged in the pre-Patch-7 meta format (no PublishHandle, or " +
-                 "PublishVersion outside ModuleInfo). Patch 8 cannot read it, so it will never " +
-                 "appear in AvailableMods and enabling it here would be undone at startup. " +
+# The gate, and it is narrower than it was - corrected 2026-08-08 by a mod that would have
+# failed it and works.
+#
+# The first version refused anything without `PublishHandle`, on the reasoning that our own
+# module lacked it and was invisible. Then a current Nexus mod turned up - "Carry Weight
+# Increased 9000", built for Patch 8 - whose meta declares format 4.0.0.49, carries no
+# PublishHandle, no FileSize and no Version64, and uses `Version` (int32) where Patch 8 modules
+# use `Version64`. All of that is the old shape, and none of it stops the game.
+#
+# What it does have, and what our broken module did not, is `PublishVersion` **inside**
+# `ModuleInfo` rather than beside it. That is the one difference the evidence actually supports,
+# so it is the only thing refused here. Everything else is noted and let through: a check that
+# blocks a working mod is worse than no check, because it sends its author looking for a fault
+# that is not there.
+if ($null -eq $info.SelectSingleNode("children/node[@id='PublishVersion']")) {
+    Write-Error ("$name has PublishVersion outside ModuleInfo. Patch 8 nests it inside, cannot " +
+                 "parse the module otherwise, and says nothing about it: the mod will never " +
+                 "appear in AvailableMods and this entry would be deleted at the next launch. " +
                  "The mod needs repackaging, not registering.")
+}
+if (-not (MetaHas "PublishHandle")) {
+    Write-Host "  note: no PublishHandle - the pre-Patch-7 shape. Not fatal; PublishHandle 0 is written."
 }
 if (-not $version) { $version = "36028797018963968" }
 if ($null -eq $md5) { $md5 = "" }
